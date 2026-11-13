@@ -211,7 +211,7 @@ function card(i) {
     <button class="btn btn--sm btn--primary" type="button" data-answer="reschedule">Find a slot</button>
     <button class="btn btn--sm" type="button" data-answer="done">Already done</button></div><p class="err" role="alert"></p></div>`;
   const link = safeUrl(i.event_link), foot = [];
-  if (i.has_prep) foot.push(`<a class="btn btn--sm btn--primary" href="/prep/${encodeURIComponent(i.id)}">Read prep doc ${arrow}</a>`);
+  if (i.has_prep) foot.push(`<a class="btn btn--sm btn--primary" href="/prep/${encodeURIComponent(i.id)}">${i.kind === 'oa' ? 'Warm-up plan' : 'Read prep doc'} ${arrow}</a>`);
   if (link && !settled) foot.push(`<a class="btn btn--sm" href="${esc(link)}" target="_blank" rel="noopener">See in Calendar ${arrow}</a>`);
   if (foot.length) h += `<div class="item-foot">${foot.join('')}</div>`;
   return h + '</article>';
