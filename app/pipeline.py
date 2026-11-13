@@ -74,8 +74,11 @@ def _handle_interview(item_id, info, company, role, body):
     if info.kind == "interview_scheduled" and info.interview_start:
         start = gcal.parse(info.interview_start)
         slot = scheduler.pick_slot(
-            task=f"Interview prep for {company} ({role}): read the prep doc, rehearse stories out loud",
+            task=(f"Interview prep for {company} ({role}): read the prep doc, rehearse stories out loud. "
+                  f"The interview itself starts {_fmt(start)}; the hard deadline below is 2 hours before it"),
             duration_minutes=60, hard_deadline=start - timedelta(hours=2),
+            preference=("As close to the interview as is sensible, so it stays fresh: ideally the afternoon or "
+                        "evening of the day before, otherwise the morning of the interview."),
         )
         title = f"Prep: {company} interview"
         description = f"Prep doc: http://localhost:8000/prep/{item_id}\n\nWhy now: {slot['reasoning']}\n\nBlocked by OAbot."

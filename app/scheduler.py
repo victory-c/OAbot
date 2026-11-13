@@ -20,7 +20,7 @@ room to recover if something goes wrong. Never pick the last possible slot when 
 is due. Prefer lighter days.
 - Leave 15 minutes of breathing room after a class before the slot starts.
 - Prefer times a student is sharp (late morning, afternoon, early evening) over late night.
-- Earlier is better when two slots are otherwise equal.
+- Follow the timing preference given with the task.
 
 Output times as ISO 8601 with the student's UTC offset. In `reasoning`, say in one or two plain \
 sentences why this slot beats the alternatives, naming the specific classes or deadlines you \
@@ -63,7 +63,10 @@ def _first_free(duration: timedelta, window_start, window_end, busy):
     return None
 
 
-def pick_slot(task: str, duration_minutes: int, hard_deadline: Optional[datetime]) -> dict:
+EARLY = "Earlier is better: when two slots are otherwise equal, take the sooner one."
+
+
+def pick_slot(task: str, duration_minutes: int, hard_deadline: Optional[datetime], preference: str = EARLY) -> dict:
     """Returns {start, end, reasoning, tip} with datetimes. Raises if no slot exists."""
     now = datetime.now(config.TZ)
     window_start = now + timedelta(minutes=30)
@@ -76,7 +79,7 @@ def pick_slot(task: str, duration_minutes: int, hard_deadline: Optional[datetime
 
     context = (
         f"Now: {now.isoformat(timespec='minutes')} ({now:%A}), timezone {config.TZ.key}\n"
-        f"Task: {task}\nLength needed: {duration_minutes} minutes\n"
+        f"Task: {task}\nTiming preference: {preference}\nLength needed: {duration_minutes} minutes\n"
         f"Hard deadline: {window_end.isoformat(timespec='minutes')} ({window_end:%A})\n\n"
         f"Busy events:\n{json.dumps(busy, indent=1)}\n\n"
         f"Coursework due (exams, assignments):\n{json.dumps(deadlines, indent=1)}"
