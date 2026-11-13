@@ -1,0 +1,14 @@
+Subject: Stripe Software Engineer Intern - Online Assessment Invitation
+
+Hi there,
+
+Thank you for applying to the Software Engineer Intern (Summer 2027) role at Stripe. We'd like to invite you to the next step: an online coding assessment on HackerRank.
+
+The assessment is 90 minutes long and has to be completed in one sitting. Please complete it within 5 days of receiving this email. Once you start, the timer cannot be paused.
+
+Start your assessment: https://www.hackerrank.com/test/example-stripe-intern/start
+
+A few tips: you can use any language you like, and you should have a quiet place with a stable internet connection.
+
+Good luck!
+Stripe University Recruiting

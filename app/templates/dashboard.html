@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OAbot</title>
+<style>
+  :root { --bg:#fafaf7; --card:#fff; --ink:#1a1a1a; --mute:#6b6b66; --line:#e6e4dc; --accent:#d97757; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#191918; --card:#232321; --ink:#eee; --mute:#9a9a94; --line:#383835; } }
+  * { box-sizing: border-box; }
+  body { font: 15px/1.5 -apple-system, system-ui, sans-serif; background: var(--bg); color: var(--ink); margin: 0; }
+  main { max-width: 980px; margin: 0 auto; padding: 24px 16px 80px; }
+  header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  h1 { margin: 0; font-size: 1.5rem; } h1 span { color: var(--accent); }
+  .pills { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
+  .pill { font-size: .75rem; padding: 2px 9px; border-radius: 99px; border: 1px solid var(--line); color: var(--mute); }
+  .pill.on { border-color: #3a9a5c; color: #3a9a5c; }
+  .tag { color: var(--mute); margin: 4px 0 20px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 14px; }
+  details summary { cursor: pointer; font-weight: 600; }
+  textarea, input { width: 100%; font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink); margin-top: 8px; }
+  textarea { min-height: 120px; }
+  button { font: inherit; padding: 7px 14px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--ink); cursor: pointer; margin: 8px 6px 0 0; }
+  button.go { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  .item-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .company { font-weight: 700; font-size: 1.05rem; }
+  .badge { font-size: .72rem; font-weight: 600; padding: 2px 8px; border-radius: 6px; text-transform: uppercase; letter-spacing: .03em; }
+  .scheduled, .prepped { background: #3a9a5c22; color: #3a9a5c; } .processing { background: #d9a43a22; color: #b98a1f; }
+  .needs_reply { background: #4a7fd922; color: #4a7fd9; } .ignored { background: #8882; color: var(--mute); } .error { background: #d94a4a22; color: #d94a4a; }
+  .row { margin-top: 6px; } .label { color: var(--mute); font-size: .8rem; }
+  .why { color: var(--mute); font-style: italic; }
+  pre { white-space: pre-wrap; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px; font: .85rem/1.5 ui-monospace, monospace; }
+  a { color: var(--accent); } .empty { color: var(--mute); text-align: center; padding: 32px 0; }
+  .spin { display:inline-block; width:10px; height:10px; border:2px solid currentColor; border-right-color:transparent; border-radius:50%; animation:s .7s linear infinite; }
+  @keyframes s { to { transform: rotate(360deg); } }
+</style></head>
+<body><main>
+  <header><h1>OA<span>bot</span></h1><div class="pills" id="pills"></div></header>
+  <p class="tag">Recruiting emails come in. Time gets blocked and prep gets written. You just show up.</p>
+
+  <div class="card">
+    <details id="paste"><summary>Paste an email (demo and fallback)</summary>
+      <input id="subject" placeholder="Subject">
+      <textarea id="body" placeholder="Paste the email body"></textarea>
+      <button class="go" onclick="send()">Process</button><span id="samples"></span>
+    </details>
+  </div>
+
+  <div id="items"><div class="empty">Waiting for recruiting emails&hellip;</div></div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => (s ?? '').toString().replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const when = iso => iso ? new Date(iso).toLocaleString([], {weekday:'short', month:'short', day:'numeric', hour:'numeric', minute:'2-digit'}) : '';
+const safeUrl = u => /^https?:\/\//i.test(u || '') ? u : '';
+
+async function send() {
+  const body = $('body').value.trim(); if (!body) return;
+  await fetch('/api/ingest', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({subject: $('subject').value, body})});
+  $('subject').value = ''; $('body').value = ''; refresh();
+}
+
+function card(i) {
+  const label = {oa:'Online assessment', interview_scheduled:'Interview', interview_needs_availability:'Interview: needs your times', rejection:'Rejection', other:'Not recruiting'}[i.kind] || '';
+  let h = `<div class="card"><div class="item-head"><span class="company">${esc(i.company || i.subject || 'New email')}</span>
+    <span class="badge ${esc(i.status)}">${i.status === 'processing' ? '<span class="spin"></span> working' : esc(i.status.replace('_',' '))}</span>
+    <span class="label">${esc(label)}${i.role ? ' &middot; ' + esc(i.role) : ''}</span></div>`;
+  if (i.deadline) h += `<div class="row"><span class="label">Due</span> ${esc(when(i.deadline))}</div>`;
+  if (i.event_start) {
+    const link = safeUrl(i.event_link);
+    h += `<div class="row"><span class="label">Blocked</span> <b>${esc(when(i.event_start))}</b> to ${esc(new Date(i.event_end).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'}))}
+      ${link ? ` &middot; <a href="${esc(link)}" target="_blank" rel="noopener">open in Calendar</a>` : ''}</div>`;
+  }
+  if (i.reasoning) h += `<div class="row why">${esc(i.reasoning)}</div>`;
+  if (i.has_prep) h += `<div class="row"><a href="/prep/${i.id}"><b>Open prep doc &rarr;</b></a></div>`;
+  else if (i.status === 'processing' && (i.kind || '').startsWith('interview')) h += `<div class="row label">Researching the company and interviewer&hellip;</div>`;
+  if (i.draft_reply) h += `<div class="row"><span class="label">Reply draft (not sent)</span><pre>${esc(i.draft_reply)}</pre></div>`;
+  if (i.error) h += `<div class="row" style="color:#d94a4a">${esc(i.error)}</div>`;
+  return h + '</div>';
+}
+
+async function refresh() {
+  const items = await (await fetch('/api/items')).json();
+  $('items').innerHTML = items.length ? items.map(card).join('') : '<div class="empty">Waiting for recruiting emails&hellip;</div>';
+}
+
+async function init() {
+  const s = await (await fetch('/api/status')).json();
+  $('pills').innerHTML = `<span class="pill ${s.gmail ? 'on' : ''}">Gmail ${s.gmail ? 'watching' : 'off'}</span>
+    <span class="pill ${s.calendar === 'google' ? 'on' : ''}">Calendar: ${esc(s.calendar)}</span>
+    <span class="pill ${s.bcourses ? 'on' : ''}">bCourses ${s.bcourses ? 'connected' : 'mock'}</span>`;
+  if (!s.gmail) $('paste').open = true;
+  const samples = await (await fetch('/api/samples')).json();
+  for (const [name, e] of Object.entries(samples)) {
+    const b = document.createElement('button'); b.textContent = 'Sample: ' + name;
+    b.onclick = () => { $('subject').value = e.subject; $('body').value = e.body; };
+    $('samples').appendChild(b);
+  }
+  refresh(); setInterval(refresh, 2500);
+}
+init();
+</script></body></html>

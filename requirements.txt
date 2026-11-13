@@ -1,0 +1,9 @@
+anthropic>=1.1.0
+fastapi
+uvicorn
+python-dotenv
+pydantic
+google-api-python-client
+google-auth-oauthlib
+icalendar
+markdown

@@ -1,0 +1,18 @@
+SAMPLE RESUME (replace: put your own at data/resume.pdf or data/resume.txt)
+
+Alex Rivera | UC Berkeley, B.A. Computer Science, expected May 2028 | GPA 3.7
+
+EXPERIENCE
+Software Engineering Intern, Campus Startup (Summer 2026)
+- Built a React Native feature used by 2,000 students; cut screen load time 40%
+- Wrote a Python service that syncs course data nightly from the registrar API
+
+Teaching Assistant, CS 61A (Fall 2026)
+- Lead a weekly section of 30 students; hold office hours
+
+PROJECTS
+- Dining Scanner: scrapes dining hall menus and ranks meals by protein per swipe (Next.js, Postgres), 400 weekly users
+- Ride Telemetry: analyzes cycling heart-rate data to estimate training zones (Python, pandas)
+
+SKILLS
+Python, TypeScript, React, SQL, Git, basic ML with PyTorch

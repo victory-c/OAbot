@@ -1,0 +1,3 @@
+Subject: Your application was received
+
+Thanks for applying to the Data Analyst Intern position at Acme Corp. We have received your application and will be in touch if your background matches our needs. Please do not reply to this email.
