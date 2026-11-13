@@ -3,6 +3,7 @@ import re
 import threading
 import traceback
 from datetime import datetime, timedelta
+from urllib.parse import urlsplit
 
 from . import classifier, config, db, gcal, notify, researcher, scheduler
 
@@ -17,7 +18,6 @@ _claimed_interviews: set[int] = set()  # interview items past the duplicate chec
 
 _SUFFIXES = r"\b(inc|incorporated|llc|ltd|limited|corp|corporation|co|company|plc|gmbh|technologies|labs)\b"
 _BLOCK_FIELDS = ("event_title", "event_start", "event_end", "event_link", "event_id")
-DISMISSED_REMINDER_DAYS = 7  # a dismissed OA with no deadline still swallows reminders this long
 
 
 def _fmt(dt):
@@ -33,12 +33,6 @@ def _key(text: str | None) -> str:
 def company_key(name: str | None) -> str:
     """'Stripe, Inc.' and 'stripe' are the same company."""
     return _key(re.sub(_SUFFIXES, " ", (name or "").lower()))
-
-
-def same_role(a: str | None, b: str | None) -> bool:
-    """Unknown roles match anything; 'SWE Intern (Summer 2027)' matches 'SWE Intern'."""
-    ka, kb = _key(a), _key(b)
-    return not ka or not kb or ka in kb or kb in ka
 
 
 def submit(subject: str, sender: str, body: str, source: str = "paste") -> int:
@@ -70,6 +64,12 @@ def _run(item_id, subject, sender, body):
         for dup in db.duplicates_of(item_id):
             db.update_item(dup["id"], status="error",
                            error=f"The earlier email this repeats failed ({exc}). Paste this one again.")
+        if isinstance(exc, gcal.CalendarUnavailable):  # nothing was blocked: say so instead of failing silently
+            try:
+                notify.send("Could not read Google Calendar, so nothing was blocked for a recruiting email. "
+                            "Open the dashboard and send it again.")
+            except Exception:
+                pass
     finally:
         _claimed_interviews.discard(item_id)
 
@@ -121,26 +121,96 @@ def _copy_result_to_duplicates(original_id):
 
 # ---------- duplicates ----------
 
-def _still_relevant(r, now) -> bool:
-    """An old OA only swallows a new email while it is still live."""
-    if r["status"] == "scheduled":
-        return bool(r["event_end"]) and gcal.parse(r["event_end"]) > now
-    try:  # dismissed: until its deadline, or a week if it had none
-        if r["deadline"]:
-            return gcal.parse(r["deadline"]) > now
+_ROLE_NOISE = {"the", "a", "an", "of", "for", "and", "role", "position", "program", "team", "summer", "fall",
+               "winter", "spring", "us", "usa", "remote"}
+_NOT_INTERN = {"grad", "new", "full", "apprentice", "associate", "senior", "staff"}
+_STALE_AFTER = timedelta(days=14)  # how long a dismissed OA with no stated deadline keeps absorbing reminders
+
+
+def _role_tokens(role: str | None) -> set[str]:
+    """'Software Engineering Intern (Summer 2027)' -> {software, engineer, intern}."""
+    out = set()
+    for w in re.findall(r"[a-z]+", (role or "").lower()):
+        if w in _ROLE_NOISE:
+            continue
+        if w.startswith("intern"):
+            w = "intern"
+        elif w in ("graduate", "grads", "graduates"):
+            w = "grad"
+        elif w.endswith("ing") and len(w) > 5:
+            w = w[:-3]
+        elif w.endswith("s") and len(w) > 3:
+            w = w[:-1]
+        out.add(w)
+    return out
+
+
+def _same_role(a: str | None, b: str | None) -> bool:
+    """Same posting, allowing for how differently two emails word it. A reminder often names no
+    role at all, so a missing role matches anything; 'intern' vs 'new grad' does not match."""
+    ta, tb = _role_tokens(a), _role_tokens(b)
+    if not ta or not tb:
+        return True
+    if ("intern" in ta) != ("intern" in tb) and (ta | tb) & _NOT_INTERN:
+        return False  # an internship and a new-grad / full-time posting are never the same OA
+    if ta <= tb or tb <= ta:
+        return True
+    return len(ta & tb) / len(ta | tb) > 0.5  # strict: 'Quant Trader Intern' is not 'Quant Researcher Intern'
+
+
+def _link_key(link: str | None) -> str:
+    """Same test link despite http/https, 'www.', host case, a trailing slash, a #fragment or utm_* tracking."""
+    link = (link or "").strip()
+    if not link:
+        return ""
+    try:
+        u = urlsplit(link if "//" in link else "//" + link)
+        host = (u.hostname or "").removeprefix("www.")
+        query = "&".join(sorted(q for q in u.query.split("&") if q and not q.lower().startswith("utm_")))
+        return f"{host}{u.path.rstrip('/')}" + (f"?{query}" if query else "")
     except ValueError:
-        pass
-    return datetime.fromisoformat(r["created"]) > now - timedelta(days=DISMISSED_REMINDER_DAYS)
+        return link.rstrip("/")
+
+
+def _is_current(row: dict, now: datetime) -> bool:
+    """Is this earlier OA still a live commitment? A finished block, a passed deadline or last
+    season's OA must not swallow a new email: missing an OA is worse than a second block."""
+    try:
+        if row["deadline"] and gcal.parse(row["deadline"]) < now:
+            return False
+        if row["status"] == "scheduled":  # the block is still ahead of us
+            return bool(row["event_end"]) and gcal.parse(row["event_end"]) > now
+        # dismissed: honour it until its deadline, or for a while if it never had one
+        return bool(row["deadline"]) or now - gcal.parse(row["created"]) <= _STALE_AFTER
+    except (TypeError, ValueError, AttributeError):
+        return False  # unreadable dates: do not let this row block anything
 
 
 def _existing_oa(item_id, info):
-    """An earlier email about the same OA (company + role) that is still live, or None."""
+    """An earlier email about the SAME OA that is already handled and still current, or None.
+
+    Same OA = same company, the earlier one is still live (see _is_current), and either the
+    same test link or a compatible role. Company alone is not enough: a new-grad OA is not a
+    reminder for last month's internship OA."""
     key = company_key(info.company)
-    if not key:
+    if not key or not config.DEDUPE:
         return None  # "Unknown company" must never match another unknown company
     now = datetime.now(config.TZ)
-    matches = [r for r in db.items_of_kind("oa", ("scheduled", "dismissed"), exclude_id=item_id)
-               if company_key(r["company"]) == key and same_role(r["role"], info.role) and _still_relevant(r, now)]
+    link = _link_key(info.link)
+    rows = [r for r in db.items_of_kind("oa", ("scheduled", "dismissed"), exclude_id=item_id)
+            if company_key(r["company"]) == key and _is_current(r, now)]
+    same_link = [r for r in rows if link and link == _link_key(r["link"])]
+
+    def same_posting(r):
+        other = _link_key(r["link"])
+        if link and other and link != other:
+            # Two different test links: only a clearly stated, compatible role makes this a reminder.
+            # A missing role must not absorb a second-stage or second-posting assessment.
+            return bool(_role_tokens(info.role) and _role_tokens(r["role"])) and _same_role(info.role, r["role"])
+        return _same_role(info.role, r["role"])
+
+    # A row with the very same test link is the one this email is about; otherwise fall back to role.
+    matches = same_link or [r for r in rows if same_posting(r)]
     # A live block beats a dismissed one; among those, the newest.
     matches.sort(key=lambda r: (r["status"] == "scheduled", r["id"]))
     return matches[-1] if matches else None
@@ -149,7 +219,7 @@ def _existing_oa(item_id, info):
 def _existing_interview(item_id, info):
     """An earlier email confirming the same interview (same company, start within an hour)."""
     key = company_key(info.company)
-    if not key or not info.interview_start:
+    if not key or not info.interview_start or not config.DEDUPE:
         return None
     start = gcal.parse(info.interview_start)
     for r in db.items_of_kind("interview_scheduled", ("processing", "prepped", "dismissed"), exclude_id=item_id):
@@ -191,8 +261,13 @@ def _handle_oa(item_id, info, company):
             _delete_block(existing)
             try:
                 _schedule_oa(item_id, info, company, deadline, replaces=existing)
-            except Exception:
-                _restore_block(existing)
+            except Exception as exc:
+                try:
+                    _restore_block(existing)
+                except Exception as restore_exc:
+                    db.update_item(existing["id"], status="error", **dict.fromkeys(_BLOCK_FIELDS),
+                                   error=f"Its block was removed to move it, then the move failed ({exc}) and "
+                                         f"putting it back failed too ({restore_exc}). Send the email again.")
                 raise
             return
         _schedule_oa(item_id, info, company, deadline)
@@ -216,7 +291,7 @@ def _schedule_oa(item_id, info, company, deadline, replaces=None):
     reasoning = slot["reasoning"]
     if replaces:
         reasoning = (f"Moved from {_fmt(gcal.parse(replaces['event_start']))}: a newer email says it's due "
-                     f"{_fmt(deadline)}, before that block ended. {reasoning}")
+                     f"{_fmt(deadline)}, before that block ends. {reasoning}")
     title = f"OA: {company}" + (f" (due {_fmt(deadline)})" if deadline else "")
     description = "\n\n".join(p for p in [
         f"Start here: {info.link}" if info.link else "",

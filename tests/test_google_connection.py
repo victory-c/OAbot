@@ -20,6 +20,7 @@ from app import config  # noqa: E402
 # Point everything at a temp folder BEFORE db/gcal are imported (they open files at import).
 TMP = Path(tempfile.mkdtemp(prefix="oabot-test-"))
 config.DATA = TMP
+config.DEDUPE = True  # never inherit the demo switch from the shell or .env
 config.GOOGLE_TOKEN = TMP / "token.json"
 
 # An oabot.db from before this change, to prove the migration keeps old rows.
@@ -105,7 +106,7 @@ class _Req:
     def __init__(self, value):
         self.value = value
 
-    def execute(self):
+    def execute(self, num_retries=0):
         if isinstance(self.value, Exception):
             raise self.value
         return self.value
@@ -131,6 +132,14 @@ class FakeCalendar:
         if isinstance(pages, Exception):
             return _Req(pages)
         return _Req(pages[int(kw.get("pageToken") or 0)])
+
+
+class HttpErr(Exception):
+    """Shaped like googleapiclient.errors.HttpError: the status lives on .resp.status."""
+
+    def __init__(self, status, reason=""):
+        super().__init__(f"HttpError {status} {reason}".strip())
+        self.resp = type("Resp", (), {"status": status})()
 
 
 def ev(title, start, end, **extra):
@@ -163,7 +172,7 @@ class CalendarRead(unittest.TestCase):
                 ],
                 "classes@group": [{"items": [ev("CS 170 Lecture", "2026-11-16T18:00:00Z", "2026-11-16T19:00:00Z"),
                                              ev("CS 170 Lecture", "2026-11-18T18:00:00Z", "2026-11-18T19:00:00Z")]}],
-                "broken@group": RuntimeError("404 calendar gone"),
+                "broken@group": HttpErr(404),  # a subscribed calendar that was deleted
             },
         )
         self._orig = gcal._service
@@ -195,8 +204,45 @@ class CalendarRead(unittest.TestCase):
         self.assertTrue(all(c["timeZone"] == TZ.key for c in self.svc.calls))
 
     def test_no_calendar_list_permission_falls_back_to_primary(self):
-        self.svc.calendarList = lambda: type("X", (), {"list": lambda *a, **k: _Req(RuntimeError("403"))})()
+        self.svc.calendarList = lambda: type("X", (), {"list": lambda *a, **k: _Req(HttpErr(403))})()
         self.assertEqual(gcal._fetch_calendar_ids(self.svc), [("primary", "primary")])
+
+    # --- an outage must stop scheduling instead of looking like a free week ---
+
+    def test_primary_calendar_outage_raises_instead_of_returning_no_events(self):
+        self.svc.pages["primary"] = HttpErr(503)
+        with self.assertRaises(gcal.CalendarUnavailable):
+            gcal.list_busy(self.start, self.end)
+
+    def test_secondary_calendar_outage_raises_instead_of_dropping_classes(self):
+        self.svc.pages["classes@group"] = HttpErr(503)
+        with self.assertRaises(gcal.CalendarUnavailable):
+            gcal.list_busy(self.start, self.end)
+
+    def test_network_error_with_no_status_raises(self):
+        self.svc.pages["classes@group"] = ConnectionError("connection reset")
+        with self.assertRaises(gcal.CalendarUnavailable):
+            gcal.list_busy(self.start, self.end)
+
+    def test_rate_limit_403_is_an_outage_not_a_missing_permission(self):
+        self.svc.pages["classes@group"] = HttpErr(403, "Rate Limit Exceeded")
+        with self.assertRaises(gcal.CalendarUnavailable):
+            gcal.list_busy(self.start, self.end)
+        self.svc.pages["classes@group"] = [{"items": []}]
+        gcal._cal_cache.update(at=0.0, ids=None)  # a cached list would (rightly) be reused; force a refetch
+        self.svc.calendarList = lambda: type("X", (), {"list": lambda *a, **k: _Req(HttpErr(403, "userRateLimitExceeded"))})()
+        with self.assertRaises(gcal.CalendarUnavailable):
+            gcal.list_busy(self.start, self.end)
+
+    def test_primary_is_never_skipped_even_when_gone(self):
+        self.svc.pages["primary"] = HttpErr(404)
+        with self.assertRaises(gcal.CalendarUnavailable):
+            gcal.list_busy(self.start, self.end)
+
+    def test_calendar_list_outage_raises_instead_of_falling_back_to_primary(self):
+        self.svc.calendarList = lambda: type("X", (), {"list": lambda *a, **k: _Req(HttpErr(503))})()
+        with self.assertRaises(gcal.CalendarUnavailable):
+            gcal.list_busy(self.start, self.end)
 
 
 class TokenScopes(unittest.TestCase):
@@ -327,6 +373,105 @@ class Pipeline(unittest.TestCase):
         d = self.email(kind="oa", company=None)
         self.assertEqual([x["status"] for x in (a, b, c, d)], ["scheduled"] * 4)
         self.assertEqual(len(self.mock_events()), 4)
+
+    # --- "same company" is not "same OA" ---
+
+    def test_new_grad_oa_is_not_a_duplicate_of_the_intern_oa(self):
+        far = (datetime.now(TZ) + timedelta(days=5)).isoformat()
+        intern = self.email(kind="oa", company="Stripe", role="Software Engineer Intern", deadline=far,
+                            link="https://hackerrank.com/test/intern")
+        grad = self.email(kind="oa", company="Stripe", role="Software Engineer, New Grad", deadline=far,
+                          link="https://hackerrank.com/test/newgrad")
+        self.assertEqual([intern["status"], grad["status"]], ["scheduled", "scheduled"])
+        self.assertIsNone(grad["duplicate_of"])
+        self.assertEqual(len(self.mock_events()), 2)
+
+    def test_same_role_worded_differently_is_still_a_reminder(self):
+        first = self.email(kind="oa", company="Hooli", role="Software Engineering Intern (Summer 2027)")
+        again = self.email(kind="oa", company="Hooli", role="Software Engineer Intern")
+        self.assertEqual(again["status"], "duplicate")
+        self.assertEqual(again["duplicate_of"], first["id"])
+
+    def test_same_test_link_is_a_reminder_whatever_the_role_text(self):
+        first = self.email(kind="oa", company="Pied Piper", role="Backend Intern", link="https://codesignal.com/t/abc/")
+        again = self.email(kind="oa", company="Pied Piper", role="University Recruiting Assessment",
+                           link="https://codesignal.com/t/abc")
+        self.assertEqual(again["status"], "duplicate")
+        self.assertEqual(again["duplicate_of"], first["id"])
+
+    def test_oa_whose_block_already_ended_does_not_swallow_a_new_email(self):
+        self.slot_start = datetime.now(TZ) - timedelta(days=3)  # an OA blocked (and over) days ago
+        old = self.email(kind="oa", company="Vandelay")
+        self.slot_start = datetime.now(TZ) + timedelta(days=1)
+        new = self.email(kind="oa", company="Vandelay")
+        self.assertEqual([old["status"], new["status"]], ["scheduled", "scheduled"])
+        self.assertIsNone(new["duplicate_of"])
+        self.assertEqual(len(self.slot_calls), 2)
+
+    def test_oa_whose_deadline_passed_does_not_swallow_a_new_email(self):
+        october = (datetime.now(TZ) - timedelta(days=30)).isoformat()
+        old = self.email(kind="oa", company="Wonka", deadline=october)
+        new = self.email(kind="oa", company="Wonka", deadline=(datetime.now(TZ) + timedelta(days=4)).isoformat())
+        self.assertEqual(new["status"], "scheduled")
+        self.assertIsNone(new["duplicate_of"])
+        self.assertEqual(db.get_item(old["id"])["status"], "scheduled")  # history untouched, not "replaced"
+
+    def test_dedupe_switch_off_schedules_every_email(self):
+        orig, config.DEDUPE = config.DEDUPE, False
+        try:
+            a = self.email(kind="oa", company="Soylent")
+            b = self.email(kind="oa", company="Soylent")
+            start = (datetime.now(TZ) + timedelta(days=6)).isoformat()
+            c = self.email(kind="interview_scheduled", company="Soylent", interview_start=start)
+            d = self.email(kind="interview_scheduled", company="Soylent", interview_start=start)
+        finally:
+            config.DEDUPE = orig
+        self.assertEqual([a["status"], b["status"]], ["scheduled", "scheduled"])
+        self.assertEqual([c["status"], d["status"]], ["prepped", "prepped"])
+
+    def test_calendar_outage_fails_the_item_and_books_nothing(self):
+        def boom(*a, **k):
+            raise gcal.CalendarUnavailable("Could not read your Google Calendar 'primary' (HttpError 503).")
+        scheduler.pick_slot = boom
+        item = self.email(kind="oa", company="Cyberdyne")
+        self.assertEqual(item["status"], "error")
+        self.assertIn("Could not read your Google Calendar", item["error"])
+        self.assertIsNone(item["event_start"])
+        self.assertEqual(self.mock_events(), [])
+
+    def test_reminder_with_a_link_updates_that_oa_not_the_newest_one(self):
+        soon = (datetime.now(TZ) + timedelta(days=3)).isoformat()
+        later = (datetime.now(TZ) + timedelta(days=8)).isoformat()
+        a = self.email(kind="oa", company="Stark", role="Software Engineer Intern", deadline=soon, link="https://hr.com/t/intern")
+        b = self.email(kind="oa", company="Stark", role="Software Engineer, New Grad", deadline=later, link="https://hr.com/t/grad")
+        reminder = self.email(kind="oa", company="Stark", deadline=soon, link="https://hr.com/t/intern?utm_source=reminder")
+        self.assertEqual(reminder["duplicate_of"], a["id"])
+        self.assertEqual(db.get_item(b["id"])["status"], "scheduled")  # the new-grad block is untouched
+        self.assertEqual(len(self.mock_events()), 2)
+
+    def test_different_link_and_no_role_is_a_new_assessment(self):
+        self.email(kind="oa", company="Goldman", link="https://hackerrank.com/test/gs1")
+        stage2 = self.email(kind="oa", company="Goldman", link="https://gs.hirevue.com/interviews/zzz")
+        self.assertEqual(stage2["status"], "scheduled")
+        self.assertIsNone(stage2["duplicate_of"])
+
+    def test_link_key(self):
+        k = pipeline._link_key
+        self.assertEqual(k("https://codesignal.com/t/abc"), k("http://www.CodeSignal.com/t/abc/?utm_source=x#start"))
+        self.assertNotEqual(k("https://codesignal.com/t/abc"), k("https://codesignal.com/t/xyz"))
+        self.assertNotEqual(k("https://x.com/t?id=1"), k("https://x.com/t?id=2"))
+        self.assertEqual(k(None), "")
+
+    def test_role_matching(self):
+        self.assertFalse(pipeline._same_role("Quant Trader Intern", "Quant Researcher Intern"))
+        self.assertFalse(pipeline._same_role("Software Engineer Intern", "Graduate Software Engineer"))
+        self.assertFalse(pipeline._same_role("Software Engineer Intern", "Software Engineer, Full Time"))
+        same, diff = pipeline._same_role, lambda a, b: not pipeline._same_role(a, b)
+        self.assertTrue(same("Software Engineering Intern (Summer 2027)", "Software Engineer Intern"))
+        self.assertTrue(same("SWE Internship", None))            # reminders often name no role
+        self.assertTrue(same("Software Engineer", "Software Engineer Intern"))  # vaguer wording of the same thing
+        self.assertTrue(diff("Software Engineer Intern", "Software Engineer, New Grad"))
+        self.assertTrue(diff("Data Analyst Intern", "Software Engineer Intern"))
 
     def test_dismissing_a_duplicate_keeps_the_original_block(self):
         first = self.email(kind="oa", company="Umbrella")

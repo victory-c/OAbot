@@ -29,6 +29,10 @@ GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/calendar.readonly",  # read busy time on every calendar (classes)
 ]
 
+# Treat a second email about the same OA or interview as a reminder (no new block).
+# Set OABOT_DEDUPE=0 to schedule every email, e.g. to re-run the same sample in a demo.
+DEDUPE = os.getenv("OABOT_DEDUPE", "1").strip().lower() not in ("0", "false", "no", "off")
+
 # Scheduling preferences
 DAY_START_HOUR = 9
 DAY_END_HOUR = 22

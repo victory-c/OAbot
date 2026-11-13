@@ -52,6 +52,40 @@ def _mock_classes(start: datetime, end: datetime):
     return out
 
 
+class CalendarUnavailable(RuntimeError):
+    """Busy time could not be read reliably, so nothing may be scheduled against it."""
+
+
+_RETRIES = 2                 # googleapiclient retries 5xx and rate limits with backoff
+_NOTHING_SCHEDULED = "Nothing was scheduled, so no block can land on top of an event OAbot could not see."
+
+
+def _http_status(exc) -> int | None:
+    """HTTP status of a googleapiclient HttpError, or None for anything else (network errors)."""
+    status = getattr(getattr(exc, "resp", None), "status", None)
+    try:
+        return int(status)
+    except (TypeError, ValueError):
+        return None
+
+
+def _rate_limited(exc) -> bool:
+    """Google reports quota and rate limits as 403 too; those are temporary, not a missing permission."""
+    # Look at Google's own reason text, not str(exc), which embeds the request URL and calendar id.
+    text = str(getattr(exc, "reason", None) or getattr(exc, "error_details", None) or exc).lower()
+    return "limit" in text or "quota" in text
+
+
+def _no_access(exc) -> bool:
+    """403 because the permission or share really is missing."""
+    return _http_status(exc) == 403 and not _rate_limited(exc)
+
+
+def _gone(exc) -> bool:
+    """A subscribed calendar that was deleted (404/410) or unshared (403): safe to skip for good."""
+    return _http_status(exc) in (404, 410) or _no_access(exc)
+
+
 def _calendar_ids(svc) -> list[tuple[str, str]]:
     """(id, name) of every calendar shown in the user's Google Calendar, primary first.
 
@@ -69,13 +103,15 @@ def _fetch_calendar_ids(svc) -> list[tuple[str, str]]:
     try:
         cals, token = [], None
         while True:
-            resp = svc.calendarList().list(pageToken=token, minAccessRole="reader").execute()
+            resp = svc.calendarList().list(pageToken=token, minAccessRole="reader").execute(num_retries=_RETRIES)
             cals += resp.get("items", [])
             token = resp.get("nextPageToken")
             if not token:
                 break
     except Exception as exc:
-        print(f"[OAbot] Could not list calendars, using primary only: {exc}", flush=True)
+        if not _no_access(exc):  # an outage, not a missing permission: other calendars may hold classes
+            raise CalendarUnavailable(f"Could not list your Google calendars ({exc}). {_NOTHING_SCHEDULED}") from exc
+        print(f"[OAbot] No permission to list calendars, using primary only: {exc}", flush=True)
         return [("primary", "primary")]
     picked = [c for c in cals if c.get("primary") or (c.get("selected") and not c.get("hidden"))]
     picked.sort(key=lambda c: not c.get("primary"))
@@ -103,7 +139,7 @@ def _google_events(svc, start: datetime, end: datetime) -> list[dict]:
                     calendarId=cal_id, timeMin=start.isoformat(), timeMax=end.isoformat(),
                     singleEvents=True,  # expands recurring events (weekly lectures) into each occurrence
                     orderBy="startTime", maxResults=250, pageToken=token, timeZone=config.TZ.key,
-                ).execute()
+                ).execute(num_retries=_RETRIES)
                 for e in resp.get("items", []):
                     if _is_busy(e):
                         item = {"title": e.get("summary", "(busy)"), "start": e["start"]["dateTime"],
@@ -114,8 +150,14 @@ def _google_events(svc, start: datetime, end: datetime) -> list[dict]:
                 token = resp.get("nextPageToken")
                 if not token:
                     break
-        except Exception as exc:  # one broken subscribed calendar must not hide the rest
-            print(f"[OAbot] Skipping calendar {cal_name!r}: {exc}", flush=True)
+        except Exception as exc:
+            # Only a calendar that is permanently unreadable (deleted or access removed) may be
+            # skipped, and never the primary one. Anything else is an outage: returning a partial
+            # list would let the scheduler book over events it could not see.
+            if cal_id == "primary" or not _gone(exc):
+                raise CalendarUnavailable(
+                    f"Could not read your Google Calendar {cal_name!r} ({exc}). {_NOTHING_SCHEDULED}") from exc
+            print(f"[OAbot] Skipping unreadable calendar {cal_name!r}: {exc}", flush=True)
     return events
 
 
