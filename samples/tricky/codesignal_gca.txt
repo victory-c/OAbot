@@ -1,0 +1,11 @@
+Subject: Databricks invited you to take the General Coding Assessment
+
+Hello,
+
+Databricks has invited you to complete the CodeSignal General Coding Assessment as part of your application for Software Engineer Intern (Summer 2027).
+
+The General Coding Assessment is 70 minutes long and proctored. You need a webcam, a microphone and a government ID. Please complete it by November 20, 2026 at 5:00 PM Pacific Time.
+
+Start: https://app.codesignal.com/invite/example-databricks-gca
+
+The CodeSignal Team, on behalf of Databricks

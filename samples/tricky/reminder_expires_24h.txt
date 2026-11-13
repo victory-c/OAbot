@@ -1,0 +1,11 @@
+Subject: Reminder: your assessment expires in 24 hours
+
+Hi,
+
+This is a reminder that you have not yet completed your Online Assessment for the Software Development Engineer Intern role at Amazon. Your assessment expires in 24 hours. After that the link will stop working and your application will not move forward.
+
+The assessment takes about 90 minutes.
+
+Resume here: https://amazon.hirevue.com/oa/example-sde-intern
+
+Amazon Student Programs
