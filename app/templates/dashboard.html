@@ -213,12 +213,23 @@ function card(i) {
   const link = safeUrl(i.event_link), foot = [];
   if (i.has_prep) foot.push(`<a class="btn btn--sm btn--primary" href="/prep/${encodeURIComponent(i.id)}">${i.kind === 'oa' ? 'Warm-up plan' : 'Read prep doc'} ${arrow}</a>`);
   if (link && !settled) foot.push(`<a class="btn btn--sm" href="${esc(link)}" target="_blank" rel="noopener">See in Calendar ${arrow}</a>`);
+  if (i.can_move) foot.push(`<button class="btn btn--sm" type="button" data-move="${esc(i.id)}">Move this block</button>`);
+  if (status === 'processing' && i.event_start && !i.ask_followup) h += `<p class="note">Finding a better time&hellip;</p>`;
   if (foot.length) h += `<div class="item-foot">${foot.join('')}</div>`;
   return h + '</article>';
 }
 
 // "Did you take it?" buttons. Cards are redrawn from HTML, so listen once on the list.
 $('items').addEventListener('click', async e => {
+  const mv = e.target.closest('button[data-move]');
+  if (mv) {
+    mv.disabled = true; mv.textContent = 'Moving…';
+    try {
+      const r = await fetch(`/api/items/${encodeURIComponent(mv.dataset.move)}/move`, {method:'POST'});
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || 'Could not move it.');
+    } catch (x) { mv.textContent = x.message; return; }
+    last = ''; refresh(); return;
+  }
   const b = e.target.closest('button[data-answer]'); if (!b) return;
   const box = b.closest('.ask'), err = box.querySelector('.err');
   box.querySelectorAll('button').forEach(x => x.disabled = true); err.textContent = '';
