@@ -1,6 +1,7 @@
 """Step 2: pick the time. Claude reasons over the calendar and coursework,
 code checks the answer really is free, then the block goes on the calendar."""
 import json
+import re
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -16,6 +17,10 @@ SOON_HOURS = 2           # with days to spare, a slot this close to now is bad n
 NO_DEADLINE_DAYS = 3     # no deadline given: do it within this, so it does not drift
 NO_DEADLINE_MAX_DAYS = 5
 EXAM_WORDS = ("midterm", "exam", "final", "quiz", "test")
+
+
+class NoSlot(RuntimeError):
+    """No block fits before the deadline (or it has passed). The message says what to do instead."""
 
 SYSTEM = f"""You schedule focused work blocks for a busy college student who tends to leave \
 online assessments and interview prep to the last minute.
@@ -42,6 +47,7 @@ within {SOON_HOURS} hours of now. Tomorrow at a good hour beats today in a rush.
 Output `start` as ISO 8601 with the student's UTC offset. In `reasons`, give 2 to 4 short points on \
 why this slot beats the alternatives, one fact each, naming the specific classes or deadlines you \
 worked around. Each under 12 words, key fact first, no bullet character, no full stop, no dashes, \
+times in 12-hour form like 5:45 PM (never 17:45), \
 e.g. "Day before the Wednesday 2:00 PM interview" or "Clear of Sunday's CS 170 Midterm 2". \
 In `tip`, give one concrete, useful preparation tip for this specific task."""
 
@@ -143,12 +149,23 @@ def _when(dt: datetime) -> str:
     return f"{dt:%a %b} {dt.day}, {dt.hour % 12 or 12}:{dt:%M %p}"
 
 
+_CLOCK24 = re.compile(r"\b([01]?\d|2[0-3]):([0-5]\d)\b(?!\s*(?:[AaPp]\.?[Mm]\b|[AaPp]\b))")
+
+
+def _twelve_hour(text: str) -> str:
+    """'starts 17:45 today' -> 'starts 5:45 PM today': the rest of the UI uses 12-hour times."""
+    def fix(m):
+        hour = int(m.group(1))
+        return f"{hour % 12 or 12}:{m.group(2)} {'PM' if hour >= 12 else 'AM'}"
+    return _CLOCK24.sub(fix, text)
+
+
 def _clean(reasons) -> list[str]:
-    """One short reason per line: no bullets, no dashes, no trailing full stop."""
+    """One short reason per line: no bullets, no dashes, no trailing full stop, 12-hour times."""
     out = []
     for r in reasons or []:
         for line in str(r).splitlines():
-            line = line.replace("—", ", ").replace("–", "-").replace(" ,", ",")
+            line = _twelve_hour(line.replace("—", ", ").replace("–", "-").replace(" ,", ","))
             line = line.strip().lstrip("-*•· ").rstrip(". ").strip()
             if line and line not in out:
                 out.append(line)
@@ -180,16 +197,16 @@ EARLY = "Earlier is better: when two slots are otherwise equal, take the sooner 
 
 def pick_slot(task: str, duration_minutes: int, hard_deadline: Optional[datetime], preference: str = EARLY) -> dict:
     """Returns {start, end, reasoning, tip} with datetimes; reasoning is one short point per line.
-    Raises RuntimeError if no slot exists (gcal.CalendarUnavailable if the calendar cannot be read)."""
+    Raises NoSlot if no slot exists (gcal.CalendarUnavailable if the calendar cannot be read)."""
     now = datetime.now(config.TZ)
     duration = timedelta(minutes=duration_minutes)
     if hard_deadline is not None and hard_deadline.tzinfo is None:
         hard_deadline = hard_deadline.replace(tzinfo=config.TZ)
     if hard_deadline is not None and hard_deadline <= now:
-        raise RuntimeError(f"This was due {_when(hard_deadline)}, which has already passed. "
+        raise NoSlot(f"This was due {_when(hard_deadline)}, which has already passed. "
                            "Ask the recruiter whether the deadline can be extended.")
     if hard_deadline is not None and hard_deadline - now < duration:
-        raise RuntimeError(
+        raise NoSlot(
             f"This needs {duration_minutes} minutes and is due {_when(hard_deadline)}, only "
             f"{_span(hard_deadline - now)} from now. Start it right now, or ask the recruiter for an extension.")
 
@@ -210,9 +227,9 @@ def pick_slot(task: str, duration_minutes: int, hard_deadline: Optional[datetime
             break
     else:
         if hard_deadline is None:
-            raise RuntimeError(f"No free {duration_minutes} minutes on your calendar in the next "
+            raise NoSlot(f"No free {duration_minutes} minutes on your calendar in the next "
                                f"{NO_DEADLINE_MAX_DAYS} days. Clear some time and send the email again.")
-        raise RuntimeError(
+        raise NoSlot(
             f"No free {duration_minutes} minutes on your calendar before this is due {_when(hard_deadline)} "
             f"({_span(hard_deadline - now)} from now). Move something, or ask the recruiter for an extension.")
     forced = urgent or (hard_deadline is not None and tier > 0)   # no room to be choosy

@@ -25,6 +25,7 @@ _conn.executescript(
         error TEXT
     );
     CREATE TABLE IF NOT EXISTS seen (gmail_id TEXT PRIMARY KEY);
+    CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
     """
 )
 
@@ -94,6 +95,18 @@ def is_seen(gmail_id: str) -> bool:
 def mark_seen(gmail_id: str):
     with _lock:
         _conn.execute("INSERT OR IGNORE INTO seen (gmail_id) VALUES (?)", (gmail_id,))
+        _conn.commit()
+
+
+def get_meta(key: str):
+    with _lock:
+        row = _conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+    return row["value"] if row else None
+
+
+def set_meta(key: str, value: str):
+    with _lock:
+        _conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, value))
         _conn.commit()
 
 

@@ -115,6 +115,8 @@ doc says it could not identify her. Keep talking while it runs.
 - If the doc says it could not confidently identify the interviewer, that is the designed
   behaviour. Say so: "it refuses to guess rather than mix you up with someone else."
 - Do not edit the company or interviewer name in the judge emails. The cache is looked up by them.
+- The cached docs only load with Victor's `data/resume.pdf`: their answer plans cite his resume. On a laptop with
+  another resume (or none) every judge doc is researched live instead, about 20 seconds.
 
 ---
 
@@ -136,6 +138,7 @@ Do this at 4:00 PM. Tick each one.
 **Prep cache**
 
 - [ ] `ls samples/prep_cache` shows five `.md` files, one per judge name in the table above.
+- [ ] The demo laptop has Victor's `data/resume.pdf`. With any other resume the cache is skipped (see above).
 - [ ] If one is missing, that judge's doc will be researched live (about 20 seconds, and nobody has checked it). Tell Victor now.
 
 **Warm-up run (this is also your safety net)**
@@ -166,7 +169,8 @@ Do this at 4:00 PM. Tick each one.
 
 - [ ] Six drafts saved, addressed to the connected inbox: the Stripe OA (`samples/oa_email.txt`) and the five judge emails.
 - [ ] Send one test email now. It must appear on the dashboard within about 30 seconds.
-- [ ] The watcher only reacts to mail that arrives AFTER the server started. If the server restarts, wait 20 seconds before sending.
+- [ ] Mail already in the inbox the first time Gmail was connected is ignored. After that, mail that arrived while the
+      server was off is picked up on the next check after it starts.
 
 **Roles**
 
@@ -188,7 +192,7 @@ Stay calm, keep talking, switch. Never debug in front of a judge.
 **Email sent from the phone never shows up**
 
 - Wait 30 seconds, once. Then use the paste box. Do not resend three times.
-- Likely causes: Gmail filed it under Promotions or Social (those are skipped), or the server restarted.
+- Likely cause: Gmail filed it under Promotions or Social (those are skipped).
 
 **Wifi down**
 
@@ -310,10 +314,10 @@ Say these out loud if asked. Offer one or two unprompted.
 
 - Runs on one laptop, for one user. Not hosted.
 - Never sends email. Availability replies are drafts you copy and send yourself.
-- Checks Gmail every 15 seconds. It skips Promotions and Social, and only acts on mail that arrives after it starts.
+- Checks Gmail every 15 seconds. It skips Promotions and Social, and only acts on mail that arrives after Gmail was first connected.
 - The Google app is in testing mode, so only accounts we added as test users can log in.
 - Without Google login it uses a sample class schedule. Without a bCourses link it uses sample deadlines.
-- The judges' prep docs were generated earlier today and are served from a cache. Anyone else is researched live, about 20 seconds.
+- The judges' prep docs were generated earlier today from Victor's resume and are served from a cache. Anyone else, or another resume, is researched live, about 20 seconds.
 - Prep docs come from public web pages and can be wrong or out of date. It will not guess when it cannot identify someone.
 - After an OA block ends it asks "Did you take it?" (Done / Reschedule / Skipped) and pings when an OA is due within 24 hours and not done. It does not do this for interview prep blocks.
 - It tells a reminder from a new OA by the test link and the role. An unusual email can still fool it.

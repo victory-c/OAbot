@@ -6,8 +6,12 @@ import threading
 import time
 from html.parser import HTMLParser
 
-from . import config, db, pipeline
+from . import config, db, notify, pipeline
 from .google_auth import load_credentials
+
+MAX_PAGES = 10          # up to 250 matching messages per poll
+GIVE_UP_AFTER = 5       # failed fetches of one message before it is skipped (with a ping)
+_failures: dict[str, int] = {}
 
 # A text/plain part shorter than this is often a stub ("view this email in your browser"),
 # so when there is an HTML part as well we read that instead.
@@ -121,30 +125,70 @@ def _body(payload) -> str:
     return plain
 
 
-def _poll_once(svc, first_run: bool):
-    resp = svc.users().messages().list(userId="me", q=config.GMAIL_QUERY, maxResults=25).execute()
-    for ref in resp.get("messages", []):
-        if db.is_seen(ref["id"]):
+def _list_ids(svc) -> list[str]:
+    """Every message matching the query, following pages, oldest first (so a reminder comes after its OA)."""
+    ids, token = [], None
+    for _ in range(MAX_PAGES):
+        resp = svc.users().messages().list(userId="me", q=config.GMAIL_QUERY, maxResults=25,
+                                           **({"pageToken": token} if token else {})).execute()
+        ids += [ref["id"] for ref in resp.get("messages", [])]
+        token = resp.get("nextPageToken")
+        if not token:
+            break
+    return list(reversed(ids))
+
+
+def _process(svc, gmail_id: str):
+    msg = svc.users().messages().get(userId="me", id=gmail_id, format="full").execute()
+    headers = {h["name"].lower(): h["value"] for h in msg["payload"].get("headers", [])}
+    body = _body(msg["payload"]) or html.unescape(msg.get("snippet", ""))
+    subject = headers.get("subject", "(no subject)")
+    print(f"[OAbot] New mail: {subject!r}", flush=True)
+    pipeline.submit(subject, headers.get("from", ""), body[:20000], source="gmail")
+
+
+def _gone(exc) -> bool:
+    status = getattr(getattr(exc, "resp", None), "status", None)
+    return str(status) in ("404", "410")
+
+
+def _poll_once(svc):
+    """One pass. The very first time Gmail is connected, mail already in the inbox is only
+    noted, not acted on. After that every new message is processed, including any that
+    arrived while the server was off. A message counts as seen only once it is queued, so
+    a failed fetch is retried on the next poll instead of being dropped."""
+    ids = _list_ids(svc)
+    if db.get_meta("gmail_started") is None:
+        for gmail_id in ids:
+            db.mark_seen(gmail_id)
+        db.set_meta("gmail_started", "1")
+        return
+    for gmail_id in ids:
+        if db.is_seen(gmail_id):
             continue
-        db.mark_seen(ref["id"])
-        if first_run:
-            continue  # only act on mail that arrives after startup
-        msg = svc.users().messages().get(userId="me", id=ref["id"], format="full").execute()
-        headers = {h["name"].lower(): h["value"] for h in msg["payload"].get("headers", [])}
-        body = _body(msg["payload"]) or html.unescape(msg.get("snippet", ""))
-        print(f"[OAbot] New mail: {headers.get('subject', '(no subject)')!r}", flush=True)
-        pipeline.submit(headers.get("subject", "(no subject)"), headers.get("from", ""), body[:20000], source="gmail")
+        try:
+            _process(svc, gmail_id)
+        except Exception as exc:
+            tries = _failures[gmail_id] = _failures.get(gmail_id, 0) + 1
+            print(f"[OAbot] Could not read Gmail message {gmail_id} (try {tries}): {exc}", flush=True)
+            if _gone(exc):
+                db.mark_seen(gmail_id)  # deleted before we read it: nothing to do
+            elif tries >= GIVE_UP_AFTER:
+                db.mark_seen(gmail_id)
+                notify.send("Could not read a new email after several tries, so it was skipped. "
+                            "If a recruiting email is missing from the dashboard, paste it in.")
+            continue
+        _failures.pop(gmail_id, None)
+        db.mark_seen(gmail_id)
 
 
 def _loop():
     from googleapiclient.discovery import build
 
     svc = build("gmail", "v1", credentials=load_credentials(), cache_discovery=False)
-    first = True
     while True:
         try:
-            _poll_once(svc, first)
-            first = False
+            _poll_once(svc)
         except Exception as exc:
             print(f"[OAbot] Gmail poll failed: {exc}", flush=True)
         time.sleep(config.POLL_SECONDS)

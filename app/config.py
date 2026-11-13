@@ -14,6 +14,9 @@ MODEL = os.getenv("OABOT_MODEL", "claude-opus-5-5")
 # Explicit so a proxy ANTHROPIC_BASE_URL in someone's shell doesn't hijack the app.
 API_BASE_URL = os.getenv("OABOT_BASE_URL", "https://api.anthropic.com")
 TZ = ZoneInfo(os.getenv("OABOT_TZ", "America/Los_Angeles"))
+# Where the dashboard is reachable, for the links OAbot writes into calendar events.
+# Set it when running on another port or host (e.g. a LAN or tunnel address you can open on your phone).
+PUBLIC_URL = (os.getenv("OABOT_PUBLIC_URL", "").strip() or "http://localhost:8000").rstrip("/")
 
 BCOURSES_ICS_URL = os.getenv("BCOURSES_ICS_URL", "").strip()
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()

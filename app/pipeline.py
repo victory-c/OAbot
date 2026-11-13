@@ -353,7 +353,7 @@ def _schedule_oa(item_id, info, company, deadline, replaces=None, note=None):
     description = "\n\n".join(p for p in [
         f"Start here: {info.link}" if info.link else "",
         plan.get("calendar", ""),
-        f"Full warm-up plan: http://localhost:8000/prep/{item_id}" if plan.get("markdown") else "",
+        f"Full warm-up plan: {config.PUBLIC_URL}/prep/{item_id}" if plan.get("markdown") else "",
         f"Prep tip: {slot['tip']}" if slot["tip"] and not plan.get("calendar") else "",
         _why(reasoning),
         "Blocked by OAbot.",
@@ -411,8 +411,18 @@ def _handle_interview(item_id, info, company, role, body):
     # 3. If the interview time is fixed, block a prep session before it.
     if info.kind == "interview_scheduled" and info.interview_start and not _is_dismissed(item_id):
         start = gcal.parse(info.interview_start)
-        with _schedule_lock:
-            slot = _schedule_prep(item_id, company, role, start)
+        try:
+            with _schedule_lock:
+                slot = _schedule_prep(item_id, company, role, start)
+        except scheduler.NoSlot:
+            # The prep block is optional; the doc is what matters, and it is already saved.
+            soon = start - datetime.now(config.TZ) < timedelta(hours=6)
+            why = ("Interview is soon: read the prep doc now" if soon else
+                   "No free hour left for a prep block before the interview: read the prep doc when you can")
+            if _finish(item_id, status="prepped", reasoning=why):
+                _copy_result_to_duplicates(item_id)
+                notify.send(f"{company} interview on {_fmt(start)}: prep doc ready. {why}.")
+            return
         if slot:
             _copy_result_to_duplicates(item_id)
             notify.send(f"{company} interview on {_fmt(start)}: prep doc ready, prep session blocked {_fmt(slot['start'])}.")
@@ -433,7 +443,7 @@ def _schedule_prep(item_id, company, role, start, note=None):
     )
     reasoning = f"{note}\n{slot['reasoning']}" if note else slot["reasoning"]
     title = f"Prep: {company} interview"
-    description = f"Prep doc: http://localhost:8000/prep/{item_id}\n\n{_why(reasoning)}\n\nBlocked by OAbot."
+    description = f"Prep doc: {config.PUBLIC_URL}/prep/{item_id}\n\n{_why(reasoning)}\n\nBlocked by OAbot."
     event = gcal.insert_event(title, slot["start"], slot["end"], description)
     if not _finish(item_id, event, status="prepped", event_title=title, event_start=slot["start"].isoformat(),
                    event_end=slot["end"].isoformat(), reasoning=reasoning):
@@ -545,6 +555,7 @@ def move_block(item_id: int) -> dict:
 def _move(item, info):
     item_id, company = item["id"], info.company or "Unknown company"
     note = f"Moved from {_fmt(gcal.parse(item['event_start']))} at your request"
+    moved = False
     try:
         with _schedule_lock:
             if item["kind"] == "oa":
@@ -555,12 +566,25 @@ def _move(item, info):
                 if _schedule_prep(item_id, company, info.role or "the role", start, note=note):
                     new = db.get_item(item_id)
                     notify.send(f"Moved your {company} interview prep to {_fmt(gcal.parse(new['event_start']))}.")
-            _delete_block(item)  # the old block, by the id it had before the move
+            moved = True  # the new block exists and the row points at it; nothing below may undo that
+            try:
+                _delete_block(item)  # the old block, by the id it had before the move
+            except Exception as exc:
+                traceback.print_exc()
+                new = db.get_item(item_id)
+                if new and not _is_dismissed(item_id) and new["event_start"]:
+                    db.update_item(item_id, error=(
+                        f"Moved to {_fmt(gcal.parse(new['event_start']))}, but couldn't remove the old block at "
+                        f"{_fmt(gcal.parse(item['event_start']))} ({exc}). Delete that one from your calendar by hand."))
         db.update_item(item_id, followup=None, risk_alerted=None)  # a new block: ask again after it
         _copy_result_to_duplicates(item_id)
     except Exception as exc:
         traceback.print_exc()
+        if moved:
+            return
         when = _fmt(gcal.parse(item["event_start"]))
+        if isinstance(exc, scheduler.NoSlot) and item["kind"] != "oa":
+            exc = "no other free hour before the interview"
         with _state_lock:  # the old block is untouched: put the card back as it was
             if not _is_dismissed(item_id):
                 db.update_item(item_id, status=item["status"],

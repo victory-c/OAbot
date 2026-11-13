@@ -36,8 +36,8 @@ deadlines, and blocks are saved locally. Everything Claude does is real.
 On the dashboard: one card per email (what it is, the block, the *why*, the prep doc link or
 reply draft), and a **This week** strip showing your calendar, coursework deadlines and Hire Me Maybe's blocks.
 
-Samples: `samples/*_email.txt` and one interview email per hackathon judge (`samples/judges/`) are the
-sample buttons. From a terminal: `sh samples/judges/send.sh <name>` (no name lists them).
+Samples: `samples/*_email.txt`, one interview email per hackathon judge (`samples/judges/`) and the edge cases in
+`samples/tricky/` are the sample buttons. From a terminal: `sh samples/judges/send.sh <name>` (no name lists them).
 
 A second email about the same OA or interview shows as a quiet **Reminder** card and does not add a block.
 Set `OABOT_DEDUPE=0` in `.env` to switch that off. Clear the dashboard with `python -m app.db reset`.
@@ -50,11 +50,15 @@ Set `OABOT_DEDUPE=0` in `.env` to switch that off. Clear the dashboard with `pyt
 3. Credentials -> Create OAuth client ID -> **Desktop app** -> download as `credentials.json` into this folder
 4. `python -m app.google_auth` (browser opens, click through the "unverified app" warning)
 5. Restart the server. The chips in the header show Gmail watching and Calendar Google and the inbox is checked every 15 seconds.
-   Only mail that arrives after the server starts is acted on (Promotions and Social are skipped)
+   Mail already in the inbox when you first connect is ignored; after that, everything new is handled, including mail that
+   arrived while the server was off (Promotions and Social are skipped)
 
 **bCourses**: bCourses -> Calendar -> *Calendar Feed* -> copy the link into `.env` as `BCOURSES_ICS_URL`.
 
 **Resume**: save yours as `data/resume.pdf` (or `data/resume.txt`). Without one, `samples/resume.txt` is used.
+
+**Calendar links**: events link back to `http://localhost:8000/prep/<id>`. Running on another port or host? Set
+`OABOT_PUBLIC_URL` in `.env`.
 
 **Discord pings** (optional): put a channel webhook URL in `.env` as `DISCORD_WEBHOOK_URL`.
 Without it, notifications are printed in the server terminal.
@@ -78,7 +82,9 @@ Paste box ────────┘   (Claude: what       interview ─> resea
 | `app/config.py`, `app/llm.py` | Settings from `.env`, the shared Claude client | shared |
 
 Prep docs for known interviewers are served from a cache in `samples/prep_cache/` (keyed on
-company + first interviewer), so they appear instantly; everyone else is researched live.
+company + first interviewer), so they appear instantly; everyone else is researched live. A cached doc
+is only used with the resume it was written from (`samples/prep_cache/resumes.json`), since its answer
+plans name resume items; with any other resume that interviewer is researched live too.
 You can also run the researcher on its own: `python -m app.researcher --help`.
 
 Where Claude does the work: reading messy emails into structured facts, weighing classes and

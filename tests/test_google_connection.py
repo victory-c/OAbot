@@ -741,11 +741,259 @@ class Pipeline(unittest.TestCase):
         self.assertFalse(pipeline.move_block(other["id"])["ok"])
         self.assertFalse(pipeline.move_block(999999)["ok"])
 
+    # ---- John's review issues ----
+
+    def test_interview_too_soon_for_a_prep_block_is_prepped_not_error(self):  # issue #16
+        def no_slot(task, duration_minutes, hard_deadline, preference=None):
+            raise scheduler.NoSlot("This was due 2:59 PM, which has already passed. Ask the recruiter...")
+        scheduler.pick_slot = no_slot
+        start = (datetime.now(TZ) + timedelta(hours=1, minutes=30)).isoformat()
+        item = self.email(kind="interview_scheduled", company="Figma", interview_start=start)
+        self.assertEqual(item["status"], "prepped")
+        self.assertEqual(item["prep_md"], "# prep")
+        self.assertIsNone(item["error"])
+        self.assertTrue(item["reasoning"].startswith("Interview is soon"))
+        self.assertNotIn("recruiter", item["reasoning"])
+        self.assertIsNone(item["event_id"])
+
+    def test_calendar_links_use_the_public_url(self):  # issue #21
+        orig = config.PUBLIC_URL
+        config.PUBLIC_URL = "http://192.168.1.20:8002"
+        try:
+            oa = self.email(kind="oa", company="Notion", deadline=(datetime.now(TZ) + timedelta(days=4)).isoformat())
+            start = (datetime.now(TZ) + timedelta(days=3)).replace(hour=14, minute=0).isoformat()
+            iv = self.email(kind="interview_scheduled", company="Asana", interview_start=start)
+        finally:
+            config.PUBLIC_URL = orig
+        text = {e["id"]: e["description"] for e in self.mock_events()}
+        self.assertIn(f"http://192.168.1.20:8002/prep/{oa['id']}", text[oa["event_id"]])
+        self.assertIn(f"http://192.168.1.20:8002/prep/{iv['id']}", text[iv["event_id"]])
+        self.assertNotIn("localhost:8000", "".join(text.values()))
+
+    def test_move_whose_old_block_wont_delete_keeps_the_new_block(self):  # issue #20
+        due = (datetime.now(TZ) + timedelta(days=4)).isoformat()
+        item = self.email(kind="oa", company="Rippling", deadline=due)
+        old_id = item["event_id"]
+        orig_delete = gcal.delete_event
+
+        def flaky_delete(event_id="", title="", start=""):
+            if event_id == old_id:
+                raise HttpErr(503)
+            return orig_delete(event_id, title, start)
+        gcal.delete_event = flaky_delete
+        try:
+            self.assertTrue(pipeline.move_block(item["id"])["ok"])
+            after = self.wait_settled(item["id"])
+        finally:
+            gcal.delete_event = orig_delete
+        self.assertEqual(after["status"], "scheduled")
+        self.assertNotEqual(after["event_id"], old_id)
+        self.assertIn(after["event_id"], self.event_ids())
+        self.assertTrue(after["error"].startswith("Moved to " + pipeline._fmt(gcal.parse(after["event_start"]))))
+        self.assertIn("couldn't remove the old block at " + pipeline._fmt(gcal.parse(item["event_start"])), after["error"])
+        self.assertNotIn("It stays at", after["error"])
+
+    def test_dismiss_route_removes_the_block(self):  # issue #18
+        from app import main
+        due = (datetime.now(TZ) + timedelta(days=4)).isoformat()
+        item = self.email(kind="oa", company="Scale AI", deadline=due)
+        self.assertEqual(main.dismiss(item["id"]), {"ok": True, "event_deleted": True})
+        self.assertEqual(db.get_item(item["id"])["status"], "dismissed")
+        self.assertNotIn(item["event_id"], self.event_ids())
+        with self.assertRaises(main.HTTPException):
+            main.dismiss(999999)
+
     def test_company_key(self):
         self.assertEqual(pipeline.company_key("Stripe, Inc."), pipeline.company_key("stripe"))
         self.assertEqual(pipeline.company_key("Jane Street"), pipeline.company_key("JaneStreet LLC"))
         self.assertNotEqual(pipeline.company_key("Meta"), pipeline.company_key("Metabase"))
         self.assertEqual(pipeline.company_key(None), "")
+
+
+# ---------------------------------------------------------------- John's review issues (outside the pipeline)
+
+class _Call:
+    def __init__(self, fn):
+        self.fn = fn
+
+    def execute(self):
+        return self.fn()
+
+
+class FakeGmail:
+    """users().messages().list/get, with pages and a message that fails to fetch a few times."""
+
+    def __init__(self, ids, fail=None, page=2):
+        self.ids, self.fail, self.page, self.gets = ids, dict(fail or {}), page, []
+
+    def users(self):
+        return self
+
+    def messages(self):
+        return self
+
+    def list(self, userId, q, maxResults, pageToken=None):
+        start = int(pageToken or 0)
+        chunk = self.ids[start:start + self.page]
+        more = start + self.page < len(self.ids)
+        return _Call(lambda: {"messages": [{"id": i} for i in chunk],
+                              **({"nextPageToken": str(start + self.page)} if more else {})})
+
+    def get(self, userId, id, format):
+        def run():
+            self.gets.append(id)
+            if self.fail.get(id, 0) > 0:
+                self.fail[id] -= 1
+                raise HttpErr(503)
+            return {"payload": {"headers": [{"name": "Subject", "value": f"subject {id}"}],
+                                "mimeType": "text/plain", "body": {"data": b64("body " + id)}}}
+        return _Call(run)
+
+
+class GmailWatcher(unittest.TestCase):  # issue #17
+    def setUp(self):
+        with db._lock:
+            db._conn.execute("DELETE FROM seen")
+            db._conn.execute("DELETE FROM meta")
+            db._conn.commit()
+        gmail_watch._failures.clear()
+        self.submitted = []
+        self._orig = (pipeline.submit, gmail_watch.notify.send)
+        gmail_watch.pipeline.submit = lambda subject, sender, body, source: self.submitted.append(subject)
+        gmail_watch.notify.send = lambda m: None
+
+    def tearDown(self):
+        pipeline.submit, gmail_watch.notify.send = self._orig
+
+    def test_first_ever_poll_only_notes_the_inbox(self):
+        gmail_watch._poll_once(FakeGmail(["a", "b"]))
+        self.assertEqual(self.submitted, [])
+        self.assertTrue(db.is_seen("a") and db.is_seen("b"))
+
+    def test_mail_that_arrived_while_down_is_processed_oldest_first_across_pages(self):
+        gmail_watch._poll_once(FakeGmail(["old"]))      # first connection
+        gmail_watch._poll_once(FakeGmail(["n3", "n2", "n1", "old"]))  # Gmail lists newest first, 2 per page
+        self.assertEqual(self.submitted, ["subject n1", "subject n2", "subject n3"])
+
+    def test_failed_fetch_is_retried_not_dropped(self):
+        gmail_watch._poll_once(FakeGmail([]))
+        svc = FakeGmail(["x", "y"], fail={"x": 1})
+        gmail_watch._poll_once(svc)
+        self.assertEqual(self.submitted, ["subject y"])
+        self.assertFalse(db.is_seen("x"))
+        gmail_watch._poll_once(svc)
+        self.assertEqual(self.submitted, ["subject y", "subject x"])
+        self.assertTrue(db.is_seen("x"))
+
+    def test_message_that_keeps_failing_is_skipped_with_a_ping(self):
+        pings = []
+        gmail_watch.notify.send = pings.append
+        gmail_watch._poll_once(FakeGmail([]))
+        svc = FakeGmail(["bad"], fail={"bad": 99})
+        for _ in range(gmail_watch.GIVE_UP_AFTER):
+            gmail_watch._poll_once(svc)
+        self.assertTrue(db.is_seen("bad"))
+        self.assertEqual(len(pings), 1)
+        gmail_watch._poll_once(svc)
+        self.assertEqual(len(svc.gets), gmail_watch.GIVE_UP_AFTER)
+
+
+class CrossSite(unittest.TestCase):  # issue #19
+    def req(self, method="POST", **headers):
+        from starlette.requests import Request
+        raw = [(k.replace("_", "-").lower().encode(), v.encode()) for k, v in headers.items()]
+        return Request({"type": "http", "method": method, "path": "/api/items/1/move", "headers": raw})
+
+    def test_rules(self):
+        from app.main import cross_site
+        host = {"host": "localhost:8000"}
+        self.assertTrue(cross_site(self.req(**host, origin="https://evil.example")))
+        self.assertTrue(cross_site(self.req(**host, origin="http://localhost:3000")))  # another local app
+        self.assertTrue(cross_site(self.req(**host, origin="null")))
+        self.assertTrue(cross_site(self.req(**host, sec_fetch_site="cross-site")))
+        self.assertTrue(cross_site(self.req(**host, sec_fetch_site="same-site")))
+        self.assertFalse(cross_site(self.req(**host, origin="http://localhost:8000", sec_fetch_site="same-origin")))
+        self.assertFalse(cross_site(self.req(**host)))  # curl, scripts: no browser to trick
+
+    def test_middleware_blocks_before_the_route_runs(self):
+        import asyncio
+        from app.main import refuse_cross_site_writes
+        called = []
+
+        async def call_next(request):
+            called.append(request.method)
+            return "ok"
+        bad = self.req(host="localhost:8000", origin="https://evil.example")
+        response = asyncio.run(refuse_cross_site_writes(bad, call_next))
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(called, [])
+        get = self.req("GET", host="localhost:8000", origin="https://evil.example")
+        self.assertEqual(asyncio.run(refuse_cross_site_writes(get, call_next)), "ok")
+
+
+class PrepCacheResume(unittest.TestCase):  # issue #22
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp(prefix="oabot-cache-"))
+        (self.dir / "acme-jo-park.md").write_text("# Acme: prep\nCites your Quest Space work.\n")
+        self._orig = (researcher.CACHE_DIR, researcher.CACHE_RESUMES)
+        researcher.CACHE_DIR, researcher.CACHE_RESUMES = self.dir, self.dir / "resumes.json"
+
+    def tearDown(self):
+        researcher.CACHE_DIR, researcher.CACHE_RESUMES = self._orig
+
+    def test_doc_for_another_resume_is_not_served(self):
+        (self.dir / "resumes.json").write_text(json.dumps({"acme-jo-park": "0123456789abcdef"}))
+        self.assertIsNone(researcher._cached("Acme", ["Jo Park"]))
+
+    def test_doc_with_no_recorded_resume_is_not_served(self):
+        self.assertIsNone(researcher._cached("Acme", ["Jo Park"]))
+
+    def test_doc_for_this_resume_is_served(self):
+        (self.dir / "resumes.json").write_text(json.dumps({"acme-jo-park": researcher.resume_fingerprint()}))
+        self.assertTrue(researcher._cached("Acme", ["Jo Park"]).startswith("# Acme: prep"))
+
+    def test_shipped_cache_is_complete(self):
+        real = self._orig[0]
+        recorded = json.loads((real / "resumes.json").read_text())
+        self.assertEqual(sorted(recorded), sorted(p.stem for p in real.glob("*.md")))
+
+
+class SmallFixes(unittest.TestCase):  # issue #24
+    def test_hints_do_not_end_the_quiz_early(self):
+        from app import quiz
+        msgs = [{"role": "assistant", "content": "Q1"}]
+        for i in range(6):
+            msgs += [{"role": "user", "content": quiz.HINT}, {"role": "assistant", "content": "nudge"}]
+        for i in range(4):
+            msgs += [{"role": "user", "content": f"answer {i}"}, {"role": "assistant", "content": f"Q{i + 2}"}]
+        msgs.append({"role": "user", "content": "answer 5"})
+        self.assertEqual(len(quiz.check(msgs)), len(msgs))
+        self.assertTrue(quiz.finished(msgs))
+        self.assertFalse(quiz.finished(msgs[:-1]))
+
+    def test_too_many_hints(self):
+        from app import quiz
+        msgs = [{"role": "assistant", "content": "Q1"}]
+        for _ in range(quiz.MAX_HINTS + 1):
+            msgs += [{"role": "user", "content": quiz.HINT}, {"role": "assistant", "content": "nudge"}]
+        with self.assertRaises(quiz.BadTranscript):
+            quiz.check(msgs[:-1])
+
+    def test_tricky_samples_are_buttons(self):
+        from app import main
+        names = main.samples()
+        tricky = [n for n in names if n.startswith("tricky: ")]
+        self.assertEqual(len(tricky), len(list((config.ROOT / "samples" / "tricky").glob("*.txt"))))
+        self.assertGreater(len(tricky), 0)
+        self.assertFalse(names[tricky[0]]["subject"].startswith("Subject:"))
+
+    def test_reasons_use_12_hour_times(self):
+        self.assertEqual(scheduler._twelve_hour("starts 17:45 today"), "starts 5:45 PM today")
+        self.assertEqual(scheduler._twelve_hour("after the 9:00 lecture, before 12:30"),
+                         "after the 9:00 AM lecture, before 12:30 PM")
+        self.assertEqual(scheduler._twelve_hour("Clear of CS 170 at 2:00 PM"), "Clear of CS 170 at 2:00 PM")
+        self.assertEqual(scheduler._twelve_hour("ends 0:15"), "ends 12:15 AM")
+        self.assertEqual(scheduler._clean(["Starts 17:45, after Data C100"]), ["Starts 5:45 PM, after Data C100"])
 
 
 if __name__ == "__main__":

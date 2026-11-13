@@ -23,7 +23,11 @@
   .list-head { display:flex; align-items:baseline; gap:12px; margin:0 0 12px; }
   .list-head span { color:var(--muted); font-size:14px; }
   #items { display:grid; gap:12px; }
-  .item { display:grid; gap:14px; }
+  .item { display:grid; gap:14px; scroll-margin-top:88px; }
+  .item:target { box-shadow:0 0 0 2px var(--accent); }
+  .item:focus { outline:none; }
+  .form-err { margin:0; color:var(--bad); font-size:14px; }
+  .form-err:empty { display:none; }
   .item-head { display:flex; gap:12px; align-items:flex-start; flex-wrap:wrap; }
   .who { min-width:0; flex:1; }
   .company { font-size:18px; overflow-wrap:anywhere; }
@@ -141,6 +145,7 @@
         <span class="hint" id="samples-hint" hidden>or load a sample:</span>
         <span class="actions" id="samples"></span>
       </div>
+      <p class="form-err" id="form-err" role="alert"></p>
     </form>
   </details>
 
@@ -153,23 +158,32 @@
 <script>
 const $ = id => document.getElementById(id);
 const esc = s => (s ?? '').toString().replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const when = iso => iso ? new Date(iso).toLocaleString([], {weekday:'short', month:'short', day:'numeric', hour:'numeric', minute:'2-digit'}) : '';
-const time = iso => iso ? new Date(iso).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'}) : '';
+let TZ;  // the student's timezone (from the server), so cards and the week strip show the same times
+const fmt = (iso, opts) => {
+  if (!iso) return '';
+  try { return new Date(iso).toLocaleString([], {...opts, timeZone: TZ}); } catch { return new Date(iso).toLocaleString([], opts); }
+};
+const when = iso => fmt(iso, {weekday:'short', month:'short', day:'numeric', hour:'numeric', minute:'2-digit'});
+const time = iso => fmt(iso, {hour:'numeric', minute:'2-digit'});
 const safeUrl = u => /^https?:\/\//i.test(u || '') ? u : '';
 const arrow = '<svg class="m-arrow" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3 8h10M9 4l4 4-4 4"/></svg>';
 const KIND = {oa:'Online assessment', interview_scheduled:'Interview', interview_needs_availability:'Interview, needs your times', rejection:'Rejection', other:'Not recruiting'};
 const STATUS = {scheduled:'Scheduled', prepped:'Prep ready', processing:'Working', needs_reply:'Needs reply', ignored:'Ignored', error:'Error', duplicate:'Reminder', replaced:'Moved', dismissed:'Dismissed'};
-const SETTLED = ['duplicate', 'replaced', 'dismissed'];
-const FOLLOWUP = {done:'Done', skipped:'Skipped'};   // the student's answer to "Did you take it?"   // rows that no longer own a calendar block
+const SETTLED = ['duplicate', 'replaced', 'dismissed'];   // rows that no longer own a calendar block
+const FOLLOWUP = {done:'Done', skipped:'Skipped'};       // the student's answer to "Did you take it?"
+const DISMISSABLE = ['scheduled', 'prepped', 'processing', 'needs_reply'];
 const EMPTY = '<div class="empty"><strong>No recruiting emails yet</strong>New ones show up here a few seconds after they arrive.</div>';
 
 $('form').addEventListener('submit', async e => {
   e.preventDefault();
   const body = $('body').value.trim(); if (!body) return;
-  $('go').disabled = true; $('go').textContent = 'Processing…';
+  $('go').disabled = true; $('go').textContent = 'Processing…'; $('form-err').textContent = '';
   try {
-    await fetch('/api/ingest', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({subject: $('subject').value, body})});
-    $('subject').value = ''; $('body').value = '';
+    const r = await fetch('/api/ingest', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({subject: $('subject').value, body})});
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || `Could not process it (error ${r.status}).`);
+    $('subject').value = ''; $('body').value = '';   // only once it is safely queued
+  } catch (x) {
+    $('form-err').textContent = x.message === 'Failed to fetch' ? 'Could not reach the server. Your email is still here: try again.' : x.message;
   } finally { $('go').disabled = false; $('go').textContent = 'Process email'; refresh(); }
 });
 
@@ -187,7 +201,7 @@ function card(i) {
   const kind = KIND[i.kind] || '';
   const settled = SETTLED.includes(status);
   const closed = FOLLOWUP[i.followup];
-  let h = `<article class="card item${settled || closed || status === 'ignored' ? ' quiet' : ''}"><div class="item-head"><div class="who">
+  let h = `<article class="card item${settled || closed || status === 'ignored' ? ' quiet' : ''}" id="item-${esc(i.id)}" tabindex="-1"><div class="item-head"><div class="who">
       <h3 class="company">${esc(i.company || i.subject || 'New email')}</h3>
       ${kind || i.role ? `<div class="kind">${esc(kind)}${kind && i.role ? ' &middot; ' : ''}${esc(i.role || '')}</div>` : ''}
     </div>${closed ? `<span class="badge ${esc(i.followup)}">${esc(closed)}</span>`
@@ -214,6 +228,8 @@ function card(i) {
   if (i.has_prep) foot.push(`<a class="btn btn--sm btn--primary" href="/prep/${encodeURIComponent(i.id)}">${i.kind === 'oa' ? 'Warm-up plan' : 'Read prep doc'} ${arrow}</a>`);
   if (link && !settled) foot.push(`<a class="btn btn--sm" href="${esc(link)}" target="_blank" rel="noopener">See in Calendar ${arrow}</a>`);
   if (i.can_move) foot.push(`<button class="btn btn--sm" type="button" data-move="${esc(i.id)}">Move this block</button>`);
+  if (DISMISSABLE.includes(status) && !closed && !i.ask_followup)
+    foot.push(`<button class="btn btn--sm" type="button" data-dismiss="${esc(i.id)}">Dismiss</button>`);
   if (status === 'processing' && i.event_start && !i.ask_followup) h += `<p class="note">Finding a better time&hellip;</p>`;
   if (foot.length) h += `<div class="item-foot">${foot.join('')}</div>`;
   return h + '</article>';
@@ -227,7 +243,25 @@ $('items').addEventListener('click', async e => {
     try {
       const r = await fetch(`/api/items/${encodeURIComponent(mv.dataset.move)}/move`, {method:'POST'});
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || 'Could not move it.');
-    } catch (x) { mv.textContent = x.message; return; }
+    } catch (x) {
+      mv.textContent = x.message;   // show why for a moment, then give the button back
+      setTimeout(() => { mv.textContent = 'Move this block'; mv.disabled = false; last = ''; refresh(); }, 4000);
+      return;
+    }
+    last = ''; refresh(); return;
+  }
+  const dm = e.target.closest('button[data-dismiss]');
+  if (dm) {
+    if (!confirm('Dismiss this one? Its block comes off your calendar and reminders for it stay quiet.')) return;
+    dm.disabled = true; dm.textContent = 'Dismissing…';
+    try {
+      const r = await fetch(`/api/items/${encodeURIComponent(dm.dataset.dismiss)}/dismiss`, {method:'POST'});
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || 'Could not dismiss it.');
+    } catch (x) {
+      dm.textContent = x.message;
+      setTimeout(() => { dm.textContent = 'Dismiss'; dm.disabled = false; last = ''; refresh(); }, 4000);
+      return;
+    }
     last = ''; refresh(); return;
   }
   const b = e.target.closest('button[data-answer]'); if (!b) return;
@@ -257,7 +291,9 @@ async function refresh() {
 }
 
 async function init() {
-  window.appStatus.then(s => { if (s && !s.gmail) $('paste').open = true; });
+  const s = await window.appStatus;
+  if (s && s.tz) TZ = s.tz;
+  if (s && !s.gmail) $('paste').open = true;
   try {
     const samples = await (await fetch('/api/samples')).json();
     for (const [name, e] of Object.entries(samples)) {
