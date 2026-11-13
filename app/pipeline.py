@@ -20,6 +20,11 @@ _SUFFIXES = r"\b(inc|incorporated|llc|ltd|limited|corp|corporation|co|company|pl
 _BLOCK_FIELDS = ("event_title", "event_start", "event_end", "event_link", "event_id")
 
 
+def _why(reasoning):
+    """Calendar-description form of the reasoning: one bullet per line."""
+    return "Why now:\n" + "\n".join(f"\u2022 {line}" for line in (reasoning or "").splitlines() if line.strip())
+
+
 def _fmt(dt):
     dt = dt.astimezone(config.TZ)
     return f"{dt:%a %b} {dt.day}, {dt.hour % 12 or 12}:{dt:%M %p}"
@@ -277,7 +282,7 @@ def _restore_block(item):
     """Put a block we deleted for a move back, because the move failed."""
     event = gcal.insert_event(item["event_title"], gcal.parse(item["event_start"]), gcal.parse(item["event_end"]),
                               "\n\n".join(p for p in [f"Start here: {item['link']}" if item["link"] else "",
-                                                      f"Why now: {item['reasoning']}", "Blocked by OAbot."] if p))
+                                                      _why(item['reasoning']), "Blocked by OAbot."] if p))
     db.update_item(item["id"], event_id=event["id"], event_link=event["link"])
 
 
@@ -291,12 +296,12 @@ def _schedule_oa(item_id, info, company, deadline, replaces=None):
     reasoning = slot["reasoning"]
     if replaces:
         reasoning = (f"Moved from {_fmt(gcal.parse(replaces['event_start']))}: a newer email says it's due "
-                     f"{_fmt(deadline)}, before that block ends. {reasoning}")
+                     f"{_fmt(deadline)}, before that block ends\n{reasoning}")
     title = f"OA: {company}" + (f" (due {_fmt(deadline)})" if deadline else "")
     description = "\n\n".join(p for p in [
         f"Start here: {info.link}" if info.link else "",
         f"Prep tip: {slot['tip']}" if slot["tip"] else "",
-        f"Why now: {reasoning}",
+        _why(reasoning),
         "Blocked by OAbot.",
     ] if p)
     event = gcal.insert_event(title, slot["start"], slot["end"], description)
@@ -321,7 +326,7 @@ def _schedule_oa(item_id, info, company, deadline, replaces=None):
                     f"Moved the block to {_fmt(slot['start'])}.")
         return
     notify.send(f"Blocked {_fmt(slot['start'])} for the {company} OA"
-                + (f" (due {_fmt(deadline)})" if deadline else "") + f". {slot['reasoning']}")
+                + (f" (due {_fmt(deadline)})" if deadline else "") + ". " + slot["reasoning"].replace("\n", "; "))
 
 
 # ---------- interviews ----------
@@ -359,7 +364,7 @@ def _handle_interview(item_id, info, company, role, body):
                             "evening of the day before, otherwise the morning of the interview."),
             )
             title = f"Prep: {company} interview"
-            description = f"Prep doc: http://localhost:8000/prep/{item_id}\n\nWhy now: {slot['reasoning']}\n\nBlocked by OAbot."
+            description = f"Prep doc: http://localhost:8000/prep/{item_id}\n\n{_why(slot['reasoning'])}\n\nBlocked by OAbot."
             event = gcal.insert_event(title, slot["start"], slot["end"], description)
         if _finish(item_id, event, status="prepped", event_title=title, event_start=slot["start"].isoformat(),
                    event_end=slot["end"].isoformat(), reasoning=slot["reasoning"]):

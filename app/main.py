@@ -1,4 +1,5 @@
 """Run:  uvicorn app.main:app --reload --port 8000"""
+import html as htmllib
 import re
 import threading
 import time
@@ -11,12 +12,22 @@ from pathlib import Path
 import markdown
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import bcourses, config, db, gcal, gmail_watch, pipeline
 
 STATE = {"gmail": False}
 TEMPLATES = Path(__file__).parent / "templates"
+
+
+def render(name: str, **values: str) -> str:
+    """Every page gets the same head (ui.css, fonts, favicon) and header from the shared partials."""
+    read = lambda n: (TEMPLATES / n).read_text(encoding="utf-8")
+    page = read(name).replace("{{head}}", read("_head.html")).replace("{{header}}", read("_header.html"))
+    for key, value in values.items():  # in order: put untrusted content last
+        page = page.replace("{{" + key + "}}", value)
+    return page
 
 
 @asynccontextmanager
@@ -28,6 +39,7 @@ async def lifespan(_app):
 
 
 app = FastAPI(title="OAbot", lifespan=lifespan)
+app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
 
 
 class EmailIn(BaseModel):
@@ -38,7 +50,7 @@ class EmailIn(BaseModel):
 
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
-    return (TEMPLATES / "dashboard.html").read_text()
+    return render("dashboard.html")
 
 
 @app.get("/api/status")
@@ -210,5 +222,5 @@ def prep(item_id: int):
     # Everything from a "Sources" / "References" heading on gets its own quiet section.
     html = re.sub(r"<h2>\s*(Sources|References)[^<]*</h2>.*", lambda m: f'<section class="sources">{m.group(0)}</section>',
                   html, count=1, flags=re.S | re.I)
-    title = (f"{item['company'] or 'Interview'} prep").replace("&", "&amp;").replace("<", "&lt;").replace("{", "&#123;")
-    return (TEMPLATES / "prep.html").read_text().replace("{{title}}", title).replace("{{content}}", html)
+    title = htmllib.escape(f"{item['company'] or 'Interview'} prep").replace("{", "&#123;")
+    return render("prep.html", title=title, content=html)

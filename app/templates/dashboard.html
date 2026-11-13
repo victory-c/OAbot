@@ -1,40 +1,56 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>OAbot</title>
+<html lang="en"><head>
+{{head}}
+<title>Hire Me Maybe</title>
+<meta name="description" content="Hire Me Maybe reads recruiting email, blocks time on your calendar and writes interview prep.">
 <style>
-  :root {
-    color-scheme: light dark;
-    --bg:#fafaf7; --card:#fff; --ink:#1a1a1a; --mute:#6b6b66; --line:#e6e4dc; --grid:#efede6;
-    --accent:#d97757; --accent-fill:#c9603c; --accent-ink:#a84a28; --accent-soft:#d9775718;
-    --busy:#e9e7df; --busy-ink:#4a4a45; --busy-edge:#b9b6aa;
-    --due:#6b4fd8; --due-soft:#6b4fd81a; --ok:#2f8a50; --bad:#c43d3d; --today:#d977570d;
-    --hour: 26px; --gut: 30px;
-  }
-  @media (prefers-color-scheme: dark) { :root {
-    --bg:#191918; --card:#232321; --ink:#eeeeea; --mute:#a3a39c; --line:#3a3a36; --grid:#2e2e2b;
-    --accent:#e08a6b; --accent-fill:#c9603c; --accent-ink:#f0a388; --accent-soft:#e08a6b20;
-    --busy:#34342f; --busy-ink:#d6d6cf; --busy-edge:#5c5c54;
-    --due:#a996ff; --due-soft:#a996ff22; --ok:#5fc084; --bad:#f07a7a; --today:#e08a6b12;
-  } }
-  * { box-sizing: border-box; }
-  html { -webkit-text-size-adjust: 100%; }
-  body { font: 15px/1.5 -apple-system, system-ui, "Segoe UI", sans-serif; background: var(--bg); color: var(--ink); margin: 0; overflow-wrap: anywhere; }
-  main { max-width: 1240px; margin: 0 auto; padding: 20px 16px 80px; }
-  header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
-  h1 { margin: 0; font-size: 1.5rem; letter-spacing: -.01em; } h1 span { color: var(--accent); }
-  h2 { margin: 0; font-size: 1rem; }
-  .pills { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
-  .pill { font-size: .75rem; padding: 2px 9px; border-radius: 99px; border: 1px solid var(--line); color: var(--mute); white-space: nowrap; }
-  .pill.on { border-color: var(--ok); color: var(--ok); }
-  .tag { color: var(--mute); margin: 4px 0 16px; }
-  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 14px; }
-  .layout { display: grid; gap: 0 18px; grid-template-columns: minmax(0, 1fr); }
-  .layout > * { min-width: 0; }
-  @media (min-width: 1000px) { .layout { grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); align-items: start; } }
-  /* Narrow screens: week, then what OAbot did, then the paste box. */
-  @media (max-width: 999px) { .left { display: contents; } #items { order: 2; } .paste-card { order: 3; } }
+  /* dashboard-only layout; everything shared lives in /static/ui.css */
+  .intro { padding:40px 0 28px; display:grid; gap:20px; grid-template-columns:minmax(0,1fr) auto; align-items:end; }
+  .intro h1 { max-width:20ch; }
+  .tally { display:flex; gap:24px; margin:0; }
+  .tally div { min-width:64px; } .tally dt { font-size:12px; color:var(--muted); } .tally dd { margin:2px 0 0; font:500 28px/1 var(--font-display); letter-spacing:-.03em; font-variant-numeric:tabular-nums; }
 
-  /* ---- This week strip ---- */
+  .paste { margin-bottom:28px; padding:0; }
+  .paste summary { list-style:none; cursor:pointer; display:flex; align-items:center; gap:10px; padding:16px 20px; min-height:56px; font-weight:500; border-radius:var(--r-lg); }
+  .paste summary::-webkit-details-marker { display:none; }
+  .paste summary .chev { margin-left:auto; width:14px; height:14px; color:var(--muted); transition:transform var(--m-in) var(--ease); }
+  .paste[open] summary .chev { transform:rotate(180deg); }
+  .paste summary small { color:var(--muted); font-weight:400; font-size:14px; }
+  .paste .body { padding:0 20px 20px; display:grid; gap:12px; }
+  .actions { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  .actions .hint { color:var(--muted); font-size:13px; margin-right:4px; }
+
+  .list-head { display:flex; align-items:baseline; gap:12px; margin:0 0 12px; }
+  .list-head span { color:var(--muted); font-size:14px; }
+  #items { display:grid; gap:12px; }
+  .item { display:grid; gap:14px; }
+  .item-head { display:flex; gap:12px; align-items:flex-start; flex-wrap:wrap; }
+  .who { min-width:0; flex:1; }
+  .company { font-size:18px; overflow-wrap:anywhere; }
+  .kind { color:var(--muted); font-size:14px; margin-top:2px; }
+  .badge { display:inline-flex; align-items:center; gap:6px; font-size:13px; font-weight:500; padding:4px 10px; border-radius:99px; white-space:nowrap; background:color-mix(in oklab, currentColor 12%, transparent); }
+  .badge::before { content:""; width:6px; height:6px; border-radius:50%; background:currentColor; }
+  .badge.scheduled, .badge.prepped { color:var(--ok); } .badge.processing { color:var(--warn); }
+  .badge.needs_reply { color:var(--info); } .badge.ignored { color:var(--muted); } .badge.error { color:var(--bad); }
+  .badge.processing::before { width:9px; height:9px; background:none; border:2px solid currentColor; border-right-color:transparent; animation:spin .8s linear infinite; }
+  .facts { display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:12px 24px; margin:0; padding:14px 0 0; border-top:1px solid var(--line); }
+  .facts dt { font-size:12px; color:var(--muted); } .facts dd { margin:2px 0 0; font-variant-numeric:tabular-nums; }
+  .why { color:var(--muted); font-size:14px; }
+  .note { margin:0; color:var(--muted); font-size:14px; }
+  .draft h4 { margin:0 0 6px; font-size:12px; font-weight:500; color:var(--muted); }
+  .err { margin:0; color:var(--bad); font-size:14px; }
+  .item-foot { display:flex; flex-wrap:wrap; gap:8px; }
+  .empty { text-align:center; padding:48px 20px; color:var(--muted); border:1px dashed var(--line-strong); border-radius:var(--r-lg); }
+  .empty strong { display:block; color:var(--ink); font-weight:500; margin-bottom:4px; }
+
+
+  /* ---- This week strip (classes, coursework and the blocks placed for you) ---- */
+  .week { margin-bottom:28px; padding:20px;
+    --mute:var(--muted); --accent-fill:var(--accent); --accent-ink:var(--link); --busy:var(--surface); --busy-ink:var(--ink);
+    --busy-edge:var(--line-strong); --due:#6b4fd8; --due-soft:#6b4fd81a; --grid:var(--line);
+    --today:color-mix(in oklab, var(--accent) 7%, transparent); --hour:26px; --gut:30px; }
+  @media (prefers-color-scheme: dark) { .week { --due:#a08cf5; --due-soft:#a08cf526; } }
+  .week h2 { margin:0; }
   .wk-head { display: flex; align-items: baseline; gap: 6px 14px; flex-wrap: wrap; margin-bottom: 4px; }
   .legend { display: flex; gap: 4px 12px; flex-wrap: wrap; margin-left: auto; font-size: .75rem; color: var(--mute); }
   .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
@@ -68,47 +84,8 @@
   .nowline { position: absolute; left: -2px; right: 0; height: 0; border-top: 2px solid var(--ink); z-index: 3; opacity: .75; }
   .nowline::before { content: ""; position: absolute; left: -3px; top: -5px; width: 8px; height: 8px; border-radius: 50%; background: var(--ink); }
   .wk-note { color: var(--mute); font-size: .78rem; margin: 8px 0 0; }
-
-  /* ---- Paste box ---- */
-  details summary { cursor: pointer; font-weight: 600; }
-  textarea, input { width: 100%; font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink); margin-top: 8px; }
-  textarea { min-height: 110px; resize: vertical; }
-  button { font: inherit; padding: 7px 14px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--ink); cursor: pointer; margin: 8px 6px 0 0; }
-  button.go { background: var(--accent-fill); border-color: var(--accent-fill); color: #fff; font-weight: 600; }
-  button:disabled { opacity: .6; cursor: default; }
-  #sent { color: var(--mute); font-size: .85rem; }
-
-  /* ---- Item cards ---- */
-  .item.fresh { animation: rise .5s ease-out; }
-  @keyframes rise { from { opacity: 0; transform: translateY(-6px); } }
-  .item-head { display: flex; gap: 6px 10px; align-items: center; flex-wrap: wrap; }
-  .company { font-weight: 700; font-size: 1.1rem; }
-  .badge { font-size: .72rem; font-weight: 600; padding: 2px 8px; border-radius: 6px; text-transform: uppercase; letter-spacing: .03em; white-space: nowrap; }
-  .scheduled, .prepped { background: #3a9a5c22; color: var(--ok); } .processing { background: #d9a43a22; color: #b98a1f; }
-  .needs_reply { background: #4a7fd922; color: #4a7fd9; } .ignored, .duplicate, .replaced, .dismissed { background: #8882; color: var(--mute); } .error { background: #d94a4a22; color: var(--bad); }
-  .label { color: var(--mute); font-size: .8rem; }
-  .row { margin-top: 8px; }
-  .hero { margin-top: 12px; padding: 12px 14px; border-radius: 10px; background: var(--accent-soft); border-left: 4px solid var(--accent-fill); }
-  .hero .cap { font-size: .7rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--accent-ink); }
-  .hero .slot { font-size: 1.45rem; font-weight: 700; line-height: 1.2; letter-spacing: -.01em; margin-top: 2px; }
-  .hero .slot span { font-weight: 500; white-space: nowrap; }
-  .hero .meta { color: var(--mute); font-size: .85rem; margin-top: 4px; }
-  .why { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 1rem; line-height: 1.45; }
-  .why .cap { display: block; margin-bottom: 2px; }
-  .plain-why { margin-top: 10px; }
-  .prep { display: inline-block; margin-top: 12px; padding: 8px 14px; border-radius: 8px; background: var(--accent-fill); color: #fff; font-weight: 600; text-decoration: none; }
-  .working { margin-top: 10px; color: var(--mute); }
-  pre { white-space: pre-wrap; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin: 4px 0 0; font: .85rem/1.5 ui-monospace, monospace; }
-  .item.quiet { padding: 10px 16px; opacity: .8; } .item.quiet .company { font-size: .95rem; font-weight: 600; }
-  .err { color: var(--bad); }
-  a { color: var(--accent-ink); } .empty { color: var(--mute); text-align: center; padding: 32px 0; }
-  .spin { display:inline-block; width:10px; height:10px; border:2px solid currentColor; border-right-color:transparent; border-radius:50%; animation:s .7s linear infinite; vertical-align: -1px; }
-  @keyframes s { to { transform: rotate(360deg); } }
-
-  @media (max-width: 640px) {
-    :root { --hour: 22px; --gut: 20px; }
-    main { padding: 14px 12px 60px; }
-    .card { padding: 12px; }
+  @media (max-width:720px) {
+    .week { padding:14px; --hour:24px; --gut:24px; }
     .wk { column-gap: 2px; }
     .wk-hours span { font-size: .56rem; right: 2px; }
     .ev { font-size: .58rem; padding: 1px 2px; border-left-width: 2px; line-height: 1.12; }
@@ -117,38 +94,144 @@
     .due { font-size: .56rem; padding: 2px; border-left-width: 2px; }
     .wk-day { font-size: .68rem; }
     .legend { margin-left: 0; }
-    .hero .slot { font-size: 1.25rem; }
   }
-  @media (prefers-reduced-motion: reduce) { .ev.block.new, .item.fresh { animation: none; } }
+  @media (prefers-reduced-motion: reduce) { .ev.block.new { animation:none; } }
+  .badge.duplicate, .badge.replaced, .badge.dismissed { color:var(--muted); }
+  .item.quiet { opacity:.85; }
+
+  @media (max-width:720px) {
+    .intro { grid-template-columns:1fr; padding-top:28px; }
+    .paste summary { flex-wrap:wrap; row-gap:2px; padding-right:44px; position:relative; }
+    .paste summary small { flex-basis:100%; }
+    .paste summary .chev { position:absolute; right:20px; top:22px; }
+    .actions .btn, .item-foot .btn { flex:1 1 auto; }
+  }
 </style></head>
-<body><main>
-  <header><h1>OA<span>bot</span></h1><div class="pills" id="pills"></div></header>
-  <p class="tag">Recruiting emails come in. Time gets blocked and prep gets written. You just show up.</p>
-
-  <div class="layout">
-    <div class="left">
-      <section class="card" aria-label="This week">
-        <div class="wk-head"><h2>This week</h2>
-          <div class="legend"><span><i class="k-busy"></i>Classes and events</span><span><i class="k-block"></i>Blocked by OAbot</span><span><i class="k-due"></i>Coursework due</span></div>
-        </div>
-        <div id="week"><p class="wk-sum">Loading your week&hellip;</p></div>
-      </section>
-
-      <div class="card paste-card">
-        <details id="paste"><summary>Paste an email (demo and fallback)</summary>
-          <input id="subject" placeholder="Subject" aria-label="Subject">
-          <textarea id="body" placeholder="Paste the email body" aria-label="Email body"></textarea>
-          <button class="go" id="go" onclick="send()">Process</button><span id="samples"></span>
-          <div id="sent" role="status"></div>
-        </details>
-      </div>
+<body>
+{{header}}
+<main class="wrap" id="main">
+  <section class="intro" aria-labelledby="title">
+    <div class="enter">
+      <h1 id="title">Recruiting inbox for interviews and online assessments</h1>
+      <p class="lead">Hire Me Maybe reads each recruiting email, blocks the time on your calendar and writes a prep doc before the interview.</p>
     </div>
+    <dl class="tally" id="tally" aria-live="polite"></dl>
+  </section>
 
-    <div id="items"><div class="empty">Waiting for recruiting emails&hellip;</div></div>
-  </div>
+  <section class="card week" aria-label="This week">
+    <div class="wk-head"><h2>This week</h2>
+      <div class="legend"><span><i class="k-busy"></i>Classes and events</span><span><i class="k-block"></i>Blocked for you</span><span><i class="k-due"></i>Coursework due</span></div>
+    </div>
+    <div id="week"><p class="wk-sum">Loading your week&hellip;</p></div>
+  </section>
+
+  <details class="card paste" id="paste">
+    <summary>Paste an email <small>for a demo, or when Gmail is off</small>
+      <svg class="chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg></summary>
+    <form class="body" id="form">
+      <label>Subject<input id="subject" autocomplete="off"></label>
+      <label>Email body<textarea id="body" required></textarea></label>
+      <div class="actions">
+        <button class="btn btn--primary" type="submit" id="go">Process email</button>
+        <span class="hint" id="samples-hint" hidden>or load a sample:</span>
+        <span class="actions" id="samples"></span>
+      </div>
+    </form>
+  </details>
+
+  <section aria-labelledby="inbox-h">
+    <div class="list-head"><h2 id="inbox-h">Emails</h2><span id="count"></span></div>
+    <div id="items"><div class="empty"><strong>No recruiting emails yet</strong>New ones show up here a few seconds after they arrive.</div></div>
+  </section>
 </main>
+
 <script>
-// Everything rendered here comes from emails or the web: every interpolated value goes through esc().
+const $ = id => document.getElementById(id);
+const esc = s => (s ?? '').toString().replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const when = iso => iso ? new Date(iso).toLocaleString([], {weekday:'short', month:'short', day:'numeric', hour:'numeric', minute:'2-digit'}) : '';
+const time = iso => iso ? new Date(iso).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'}) : '';
+const safeUrl = u => /^https?:\/\//i.test(u || '') ? u : '';
+const arrow = '<svg class="m-arrow" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3 8h10M9 4l4 4-4 4"/></svg>';
+const KIND = {oa:'Online assessment', interview_scheduled:'Interview', interview_needs_availability:'Interview, needs your times', rejection:'Rejection', other:'Not recruiting'};
+const STATUS = {scheduled:'Scheduled', prepped:'Prep ready', processing:'Working', needs_reply:'Needs reply', ignored:'Ignored', error:'Error', duplicate:'Reminder', replaced:'Moved', dismissed:'Dismissed'};
+const SETTLED = ['duplicate', 'replaced', 'dismissed'];   // rows that no longer own a calendar block
+const EMPTY = '<div class="empty"><strong>No recruiting emails yet</strong>New ones show up here a few seconds after they arrive.</div>';
+
+$('form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const body = $('body').value.trim(); if (!body) return;
+  $('go').disabled = true; $('go').textContent = 'Processing…';
+  try {
+    await fetch('/api/ingest', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({subject: $('subject').value, body})});
+    $('subject').value = ''; $('body').value = '';
+  } finally { $('go').disabled = false; $('go').textContent = 'Process email'; refresh(); }
+});
+
+// The scheduler writes one short reason per line. Older items hold a paragraph: break it at
+// sentences and at ", which / , so / , and" so it still skims.
+function points(text) {
+  const t = (text || '').trim(); if (!t) return [];
+  const lines = t.includes('\n') ? t.split('\n')
+    : t.split(/(?<=[.!?])\s+(?=[A-Z])/).flatMap(s => s.split(/,\s+(?:which|so|and)\s+/));
+  return lines.map(s => s.trim().replace(/[.;]+$/, '')).filter(Boolean).map(s => s[0].toUpperCase() + s.slice(1));
+}
+
+function card(i) {
+  const status = i.status || '';
+  const kind = KIND[i.kind] || '';
+  const settled = SETTLED.includes(status);
+  let h = `<article class="card item${settled || status === 'ignored' ? ' quiet' : ''}"><div class="item-head"><div class="who">
+      <h3 class="company">${esc(i.company || i.subject || 'New email')}</h3>
+      ${kind || i.role ? `<div class="kind">${esc(kind)}${kind && i.role ? ' &middot; ' : ''}${esc(i.role || '')}</div>` : ''}
+    </div><span class="badge ${esc(status)}">${esc(STATUS[status] || status.replace(/_/g, ' '))}</span></div>`;
+  const facts = [];
+  if (i.deadline) facts.push(`<div><dt>Due</dt><dd>${esc(when(i.deadline))}</dd></div>`);
+  if (i.event_start && !settled) facts.push(`<div><dt>On your calendar</dt><dd>${esc(when(i.event_start))} to ${esc(time(i.event_end))}</dd></div>`);
+  if (facts.length) h += `<dl class="facts">${facts.join('')}</dl>`;
+  const why = points(i.reasoning);
+  if (why.length) h += `<ul class="points why">${why.map(p => `<li>${esc(p)}</li>`).join('')}</ul>`;
+  if (status === 'processing' && !i.has_prep && (i.kind || '').startsWith('interview')) h += `<p class="note">Researching the company and interviewer&hellip;</p>`;
+  if (i.draft_reply) h += `<div class="draft"><h4>Reply draft, not sent</h4><pre>${esc(i.draft_reply)}</pre></div>`;
+  if (i.error) h += `<p class="err">${esc(i.error)}</p>`;
+  const link = safeUrl(i.event_link), foot = [];
+  if (i.has_prep) foot.push(`<a class="btn btn--sm btn--primary" href="/prep/${encodeURIComponent(i.id)}">Read prep doc ${arrow}</a>`);
+  if (link && !settled) foot.push(`<a class="btn btn--sm" href="${esc(link)}" target="_blank" rel="noopener">See in Calendar ${arrow}</a>`);
+  if (foot.length) h += `<div class="item-foot">${foot.join('')}</div>`;
+  return h + '</article>';
+}
+
+let last = '';
+async function refresh() {
+  let items;
+  try { items = await (await fetch('/api/items')).json(); } catch { return; }
+  const html = items.length ? items.map(card).join('') : EMPTY;
+  if (html !== last) { $('items').innerHTML = html; last = html; }   // only redraw on change, so hover and focus hold
+  const n = s => items.filter(i => s.includes(i.status)).length;
+  $('count').textContent = items.length ? `${items.length} total` : '';
+  $('tally').innerHTML = items.length ? `<div><dt>Scheduled</dt><dd>${n(['scheduled','prepped'])}</dd></div>
+    <div><dt>Needs reply</dt><dd>${n(['needs_reply'])}</dd></div><div><dt>Working</dt><dd>${n(['processing'])}</dd></div>` : '';
+}
+
+async function init() {
+  window.appStatus.then(s => { if (s && !s.gmail) $('paste').open = true; });
+  try {
+    const samples = await (await fetch('/api/samples')).json();
+    for (const [name, e] of Object.entries(samples)) {
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'btn btn--sm'; b.textContent = name.replace(/_/g, ' ').replace(/^judge /, '');
+      b.onclick = () => { $('subject').value = e.subject; $('body').value = e.body; $('body').focus(); };
+      $('samples').appendChild(b);
+    }
+    $('samples-hint').hidden = !Object.keys(samples).length;
+  } catch {}
+  refresh(); setInterval(refresh, 2500);
+}
+init();
+</script>
+<script>
+// "This week" strip. Self-contained so it shares nothing with the cards script above.
+// Everything rendered here comes from the calendar or coursework feed: every value goes through esc().
+(() => {
 const $ = id => document.getElementById(id);
 const esc = s => (s ?? '').toString().replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const safeUrl = u => /^https?:\/\//i.test(u || '') ? u : '';
@@ -162,7 +245,6 @@ const day = iso => fmt(iso, {weekday:'short', month:'short', day:'numeric'});
 const clock = iso => fmt(iso, {hour:'numeric', minute:'2-digit'});
 const when = iso => fmt(iso, {weekday:'short', month:'short', day:'numeric', hour:'numeric', minute:'2-digit'});
 const shortClock = m => { const h = Math.floor(m / 60) % 24, mm = m % 60; return (h % 12 || 12) + (mm ? ':' + String(mm).padStart(2, '0') : '') + (h < 12 ? 'a' : 'p'); };
-
 /* ---------- This week strip ---------- */
 const H0 = 9, H1 = 22;          // same hours the scheduler is allowed to use
 const seenBlocks = new Map();   // block id -> first time we saw it (to pulse new ones)
@@ -184,7 +266,7 @@ function lanes(evts) {          // side-by-side columns for overlapping events
 function blockName(b) {
   const what = b.kind === 'oa' ? 'OA' : (b.kind || '').startsWith('interview') ? 'Prep' : '';
   if (what && b.company) return what + ': ' + b.company;
-  return (b.title || 'OAbot block').replace(/\s*\(due .*\)\s*$/, '');
+  return (b.title || 'Blocked for you').replace(/\s*\(due .*\)\s*$/, '');
 }
 
 function renderWeek(c) {
@@ -229,8 +311,8 @@ function renderWeek(c) {
 
   const nb = c.blocks.length + c.busy.filter(e => e.oabot).length, ne = c.busy.filter(e => !e.oabot).length, nd = c.deadlines.length;
   const around = `${ne} ${ne === 1 ? 'event' : 'events'} and ${nd} coursework ${nd === 1 ? 'deadline' : 'deadlines'}`;
-  const sum = nb ? `<b>${nb} ${nb === 1 ? 'block' : 'blocks'} placed by OAbot</b> around ${around}.`
-                 : `${around} this week. Blocks OAbot creates show up here in orange.`;
+  const sum = nb ? `<b>${nb} ${nb === 1 ? 'block' : 'blocks'} placed for you</b> around ${around}.`
+                 : `${around} this week. Blocks Hire Me Maybe creates show up here in orange.`;
   const notes = Object.entries(c.problems || {}).map(([k, v]) => `${esc(k)} ${esc(v)}`);
   $('week').innerHTML = `<p class="wk-sum">${sum}</p>${h}` +
     (notes.length ? `<p class="wk-note">Could not refresh: ${notes.join('; ')}. Showing what is available.</p>` : '');
@@ -240,7 +322,7 @@ function renderWeek(c) {
 
 function placeNow() {             // "now" line in today's column, in the student's timezone
   document.querySelectorAll('.nowline').forEach(n => n.remove());
-  const col = document.querySelector('.wk-col[data-day="0"]'); if (!col || !weekData) return;
+  const col = document.querySelector('.wk-col[data-day="0"]'); if (!col || !weekData || !weekData.days) return;
   let parts;
   try { parts = new Intl.DateTimeFormat('en-CA', {timeZone: TZ, year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hourCycle:'h23'}).formatToParts(new Date()); }
   catch { return; }
@@ -253,114 +335,15 @@ function placeNow() {             // "now" line in today's column, in the studen
   col.appendChild(line);
 }
 
-/* ---------- Item cards ---------- */
-const KINDS = {oa:'Online assessment', interview_scheduled:'Interview', interview_needs_availability:'Interview: needs your times', rejection:'Rejection', other:'Not recruiting'};
-const STATUSES = ['processing', 'scheduled', 'prepped', 'needs_reply', 'ignored', 'error', 'duplicate', 'replaced', 'dismissed'];
-// Rows that no longer own a calendar block: a reminder for an existing one, a block that was moved, or one the student dismissed.
-const SETTLED = {duplicate: 'reminder', replaced: 'moved', dismissed: 'dismissed'};
-
-function card(i) {
-  const status = STATUSES.includes(i.status) ? i.status : 'processing';
-  const kind = i.kind || '', interview = kind.startsWith('interview');
-  const settled = status in SETTLED;
-  const quiet = status === 'ignored' || settled;
-  let h = `<div class="item-head"><span class="company">${esc(i.company || i.subject || 'New email')}</span>
-    <span class="badge ${status}">${status === 'processing' ? '<span class="spin"></span> working' : esc(SETTLED[status] || status.replace('_', ' '))}</span>
-    <span class="label">${esc(KINDS[kind] || '')}${i.role ? ' &middot; ' + esc(i.role) : ''}</span></div>`;
-  if (i.event_start && !settled) {
-    const link = safeUrl(i.event_link);
-    const meta = [i.deadline ? `Due ${esc(when(i.deadline))}` : '',
-                  link ? `<a href="${esc(link)}" target="_blank" rel="noopener noreferrer">open in Calendar</a>` : ''].filter(Boolean);
-    h += `<div class="hero"><div class="cap">${interview ? 'Prep time blocked for you' : 'Blocked for you'}</div>
-      <div class="slot">${esc(day(i.event_start))} <span>${esc(clock(i.event_start))} to ${esc(clock(i.event_end))}</span></div>
-      ${meta.length ? `<div class="meta">${meta.join(' &middot; ')}</div>` : ''}
-      ${i.reasoning ? `<div class="why"><span class="cap">Why this slot</span>${esc(i.reasoning)}</div>` : ''}</div>`;
-  } else {
-    if (i.deadline && !settled) h += `<div class="row"><span class="label">Due</span> ${esc(when(i.deadline))}</div>`;
-    if (i.reasoning) h += `<div class="plain-why"><span class="label">Why</span> ${esc(i.reasoning)}</div>`;
-  }
-  if (i.has_prep) h += `<a class="prep" href="/prep/${Number(i.id)}">Open prep doc &rarr;</a>`;
-  if (status === 'processing' || (status === 'needs_reply' && !i.has_prep)) {
-    const doing = !kind ? 'Reading the email' : kind === 'oa' ? 'Checking classes and coursework for the best slot'
-      : interview && !i.has_prep ? 'Researching the company and interviewer' : interview ? 'Finding time to prep before the interview' : 'Working';
-    h += `<div class="working"><span class="spin"></span> ${doing}&hellip;</div>`;
-  }
-  if (i.draft_reply) h += `<div class="row"><span class="label">Reply draft (not sent, you send it)</span><pre>${esc(i.draft_reply)}</pre></div>`;
-  if (i.error) h += `<div class="row err">${esc(i.error)}</div>`;
-  return {cls: 'card item' + (quiet ? ' quiet' : ''), html: h};
-}
-
-const cards = new Map();   // item id -> element; only cards whose content changed are touched
-let itemsLoaded = false, lastItems = '';
-function renderItems(items) {
-  const box = $('items');
-  if (!items.length) { cards.clear(); box.innerHTML = '<div class="empty">Waiting for recruiting emails&hellip;</div>'; itemsLoaded = true; return; }
-  if (!cards.size) box.innerHTML = '';
-  const live = new Set();
-  let prev = null;
-  for (const it of items) {
-    const id = String(it.id); live.add(id);
-    const c = card(it);
-    let el = cards.get(id);
-    const fresh = !el && itemsLoaded;
-    if (!el) { el = document.createElement('article'); el.id = 'item-' + Number(it.id); cards.set(id, el); }
-    if (el._html !== c.html || el._cls !== c.cls) { el.className = c.cls + (fresh ? ' fresh' : ''); el.innerHTML = c.html; el._html = c.html; el._cls = c.cls; }
-    const want = prev ? prev.nextSibling : box.firstChild;
-    if (want !== el) box.insertBefore(el, want);
-    prev = el;
-  }
-  for (const [id, el] of cards) if (!live.has(id)) { el.remove(); cards.delete(id); }
-  itemsLoaded = true;
-}
-
-/* ---------- Polling: only re-render when the data actually changed ---------- */
-async function refreshItems() {
-  try {
-    const text = await (await fetch('/api/items')).text();
-    if (text === lastItems) return;
-    renderItems(JSON.parse(text)); lastItems = text;
-  } catch (e) { /* server restarting: keep what is on screen */ }
-}
 async function refreshWeek() {
   try {
     const text = await (await fetch('/api/calendar')).text();
     if (text === lastWeek) return;
-    weekData = JSON.parse(text); TZ = TZ || weekData.tz; renderWeek(weekData); lastWeek = text;
-  } catch (e) { /* keep what is on screen */ }
+    const data = JSON.parse(text); if (!data.days) return;   // an error body, not a week
+    weekData = data; TZ = TZ || weekData.tz; renderWeek(weekData); lastWeek = text;
+  } catch (e) { /* server restarting: keep what is on screen */ }
 }
-function loop(fn, ms) { const run = async () => { await fn(); setTimeout(run, ms); }; run(); }
-
-async function send() {
-  const body = $('body').value.trim(); if (!body) return;
-  $('go').disabled = true;
-  try {
-    const r = await fetch('/api/ingest', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({subject: $('subject').value, body})});
-    if (!r.ok) throw new Error();
-    $('subject').value = ''; $('body').value = '';
-    $('sent').textContent = 'Got it. Watch the week above.';
-  } catch (e) { $('sent').textContent = 'Could not send that. Is the server running?'; }
-  $('go').disabled = false;
-  refreshItems();
-}
-
-async function init() {
-  let s = {};
-  try { s = await (await fetch('/api/status')).json(); } catch (e) {}
-  TZ = s.tz || undefined;
-  $('pills').innerHTML = `<span class="pill ${s.gmail ? 'on' : ''}">Gmail ${s.gmail ? 'watching' : 'off'}</span>
-    <span class="pill ${s.calendar === 'google' ? 'on' : ''}">Calendar: ${esc(s.calendar)}</span>
-    <span class="pill ${s.bcourses ? 'on' : ''}">bCourses ${s.bcourses ? 'connected' : 'mock'}</span>`;
-  if (!s.gmail) $('paste').open = true;
-  loop(refreshItems, 2500); loop(refreshWeek, 2500);
-  setInterval(placeNow, 60000);
-  try {
-    const samples = await (await fetch('/api/samples')).json();
-    for (const [name, e] of Object.entries(samples)) {
-      const b = document.createElement('button'); b.textContent = 'Sample: ' + name;
-      b.onclick = () => { $('subject').value = e.subject; $('body').value = e.body; $('sent').textContent = ''; };
-      $('samples').appendChild(b);
-    }
-  } catch (e) {}
-}
-init();
+(async function run() { await refreshWeek(); setTimeout(run, 2500); })();
+setInterval(placeNow, 60000);
+})();
 </script></body></html>
