@@ -73,7 +73,7 @@ def _run(item_id, subject, sender, body):
         for dup in db.duplicates_of(item_id):
             db.update_item(dup["id"], status="error",
                            error=f"The earlier email this repeats failed ({exc}). Paste this one again.")
-        if isinstance(exc, scheduler.NoSlot) and info is not None:  # too late to plan: tell them to act now
+        if isinstance(exc, scheduler.NoSlot) and info is not None and not _is_dismissed(item_id):  # too late to plan: tell them to act now
             try:
                 notify.send(_no_slot_message(info, exc), urgent=True)
             except Exception:
@@ -292,8 +292,10 @@ def _handle_oa(item_id, info, company):
                 when = f" for {_fmt(gcal.parse(existing['event_start']))}" if existing["event_start"] else ""
                 _mark_duplicate(item_id, existing, f"Reminder for the {company} OA. Already blocked{when}, "
                                                     "which still beats the deadline. No new block.")
-                notify.send(f"Reminder from {company}: your OA is already blocked{when}.\n{_due_line(deadline)}",
-                            urgent=notify.is_urgent(deadline))
+                # A reminder often restates no deadline: the original email's still applies.
+                due = deadline or (gcal.parse(existing["deadline"]) if existing["deadline"] else None)
+                notify.send(f"Reminder from {company}: your OA is already blocked{when}.\n{_due_line(due)}",
+                            urgent=notify.is_urgent(due))
                 return
             # The reminder shows an earlier deadline than the current block allows: move it.
             # Free the old slot first so the scheduler may reuse that time.

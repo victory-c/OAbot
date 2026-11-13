@@ -342,6 +342,33 @@ class UrgentPings(unittest.TestCase):
         self.assertIn("Ramp OA: no time left", message)
         self.assertIn("Start: https://hackerrank.com/t/1", message)
 
+    def test_no_slot_after_dismiss_stays_quiet(self):
+        holder = {}
+
+        def no_slot(*a, **k):
+            db.update_item(holder["id"], status="dismissed")  # student dismissed while Claude was thinking
+            raise scheduler.NoSlot("No free slot before the deadline. Do it now.")
+        scheduler.pick_slot = no_slot
+        classifier.classify_email = lambda s, f, b: EmailInfo(
+            summary="s", kind="oa", company="Ramp", deadline=(_now() + timedelta(hours=2)).isoformat())
+        holder["id"] = db.add_item("test", "r@x.com", "subj", "body")
+        pipeline._run(holder["id"], "subj", "r@x.com", "body")
+        self.assertEqual(db.get_item(holder["id"])["status"], "dismissed")
+        self.assertEqual(self.sent, [])
+
+    def test_reminder_without_deadline_uses_original(self):
+        config.DEDUPE = True
+        due = _now() + timedelta(hours=5)
+        self.run_email(kind="oa", company="Jane Street", role="SWE Intern", deadline=due.isoformat(),
+                       link="https://app.codility.com/test/js1")
+        self.sent.clear()
+        item = self.run_email(kind="oa", company="Jane Street", link="https://app.codility.com/test/js1")
+        self.assertEqual(item["status"], "duplicate")
+        message, urgent = self.sent[-1]
+        self.assertTrue(urgent)
+        self.assertIn("due in 4h", message)
+        self.assertNotIn("No deadline given", message)
+
     def test_rejection_sends_nothing(self):
         item = self.run_email(kind="rejection", company="Figma")
         self.assertEqual(item["status"], "ignored")
