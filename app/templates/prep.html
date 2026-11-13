@@ -5,16 +5,130 @@
 <style>
   /* prep-only layout; everything shared lives in /static/ui.css */
   .back { display:inline-flex; align-items:center; gap:8px; min-height:44px; margin:20px 0 8px; font-size:15px; }
+  .bar { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
   .prose { padding-bottom:16px; }
   .prose .scroll { overflow-x:auto; margin:0 0 14px; }
   .prose .sources { margin-top:40px; padding:4px 16px 12px; background:var(--card); border:1px solid var(--line); border-radius:var(--r-lg); font-size:14px; line-height:1.45; color:var(--muted); }
   .prose .sources h2 { font-size:12px; font-weight:500; color:var(--muted); border:0; margin:10px 0 4px; padding:0; }
   .prose .sources li { margin:4px 0; }
+
+  /* Quiz me */
+  .quiz { margin-top:40px; scroll-margin-top:84px; }
+  .quiz .lead { margin:6px 0 16px; }
+  .quiz__log { display:grid; gap:14px; margin:0 0 16px; padding:0; list-style:none; }
+  .quiz__log:empty { display:none; }
+  .turn { display:grid; gap:4px; }
+  .turn__who { font-size:12px; font-weight:500; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; }
+  .turn__text { white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.55; }
+  .turn--you .turn__text { padding:10px 12px; background:var(--surface); border-radius:var(--r); }
+  .turn--wait .turn__text { color:var(--muted); }
+  .quiz form { display:grid; gap:10px; }
+  .quiz textarea { min-height:110px; }
+  .quiz__actions { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .quiz__err { color:var(--bad); font-size:14px; margin:0; }
+  .quiz__err:empty { display:none; }
+  [hidden] { display:none !important; }
 </style></head>
 <body>
 {{header}}
 <main class="wrap--reading" id="main">
-  <a class="link back" href="/"><svg class="m-arrow m-arrow--back" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M13 8H3M7 4 3 8l4 4"/></svg>Back to inbox</a>
+  <div class="bar">
+    <a class="link back" href="/"><svg class="m-arrow m-arrow--back" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M13 8H3M7 4 3 8l4 4"/></svg>Back to inbox</a>
+    <a class="btn btn--sm" href="#practice" id="jump">Quiz me</a>
+  </div>
   <article class="prose">{{content}}</article>
+
+  <section class="card quiz" id="practice" data-id="{{item_id}}" data-mode="{{mode}}" aria-labelledby="quiz-h">
+    <h2 id="quiz-h">Quiz me</h2>
+    <p class="lead" id="quiz-lead"></p>
+    <ol class="quiz__log" id="log" aria-live="polite"></ol>
+    <p class="quiz__err" id="err" role="alert"></p>
+    <div class="quiz__actions" id="start-row">
+      <button class="btn btn--primary" type="button" id="start">Start practice</button>
+    </div>
+    <form id="answer" hidden>
+      <label>Your answer<textarea id="text" maxlength="4000" placeholder="Answer as you would out loud. Ctrl+Enter sends."></textarea></label>
+      <div class="quiz__actions">
+        <button class="btn btn--primary" type="submit" id="send">Send answer</button>
+        <button class="btn" type="button" id="hint">Hint</button>
+        <button class="btn" type="button" id="restart">Start over</button>
+      </div>
+    </form>
+  </section>
 </main>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const box = $('practice');
+  const id = box.dataset.id, oa = box.dataset.mode === 'oa';
+  const who = oa ? 'Coach' : 'Interviewer';
+  $('quiz-lead').textContent = oa
+    ? 'Five practice items in the style of this test, with feedback on each answer.'
+    : 'A five-question mock interview built from this doc and your resume, with feedback after each answer.';
+  let messages = [], busy = false, done = false;
+
+  function turn(role, text, extra) {
+    const li = document.createElement('li');
+    li.className = 'turn ' + (role === 'user' ? 'turn--you' : '') + (extra ? ' ' + extra : '');
+    const w = document.createElement('span'); w.className = 'turn__who'; w.textContent = role === 'user' ? 'You' : who;
+    const t = document.createElement('div'); t.className = 'turn__text'; t.textContent = text;
+    li.append(w, t); $('log').append(li);
+    return li;
+  }
+
+  async function ask() {
+    busy = true; $('err').textContent = '';
+    for (const b of ['send', 'hint', 'start']) $(b).disabled = true;
+    const wait = turn('assistant', 'Thinking…', 'turn--wait');
+    try {
+      const r = await fetch(`/api/prep/${encodeURIComponent(id)}/quiz`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({messages})});
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.detail || 'Something went wrong.');
+      wait.remove();
+      messages.push({role: 'assistant', content: data.reply});
+      turn('assistant', data.reply);
+      done = !!data.done;
+      $('answer').hidden = done; $('start-row').hidden = !done;
+      $('start').textContent = 'Practice again';
+      if (!done) $('text').focus();
+    } catch (e) {
+      wait.remove();
+      if (messages.length && messages[messages.length - 1].role === 'user') {
+        const last = messages.pop();          // let them resend it
+        $('log').lastElementChild?.remove();
+        $('text').value = last.content;
+      }
+      $('err').textContent = e.message;
+    } finally {
+      busy = false;
+      for (const b of ['send', 'hint', 'start']) $(b).disabled = false;
+    }
+  }
+
+  function send(text) {
+    text = text.trim();
+    if (!text || busy || done) return;
+    messages.push({role: 'user', content: text});
+    turn('user', text);
+    $('text').value = '';
+    ask();
+  }
+
+  function start() {
+    messages = []; done = false; $('log').replaceChildren();
+    $('start-row').hidden = true; $('answer').hidden = true;
+    ask();
+  }
+
+  $('start').addEventListener('click', start);
+  $('restart').addEventListener('click', start);
+  $('jump').addEventListener('click', () => { if (!messages.length && !busy) setTimeout(start, 300); });
+  $('answer').addEventListener('submit', e => { e.preventDefault(); send($('text').value); });
+  $('hint').addEventListener('click', () => send("I'm stuck. Can I have a hint?"));
+  $('text').addEventListener('keydown', e => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); send($('text').value); }
+  });
+})();
+</script>
 </body></html>

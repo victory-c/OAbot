@@ -15,7 +15,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import bcourses, config, db, gcal, gmail_watch, pipeline
+from . import bcourses, config, db, gcal, gmail_watch, pipeline, quiz
 
 STATE = {"gmail": False}
 TEMPLATES = Path(__file__).parent / "templates"
@@ -223,4 +223,27 @@ def prep(item_id: int):
     html = re.sub(r"<h2>\s*(Sources|References)[^<]*</h2>.*", lambda m: f'<section class="sources">{m.group(0)}</section>',
                   html, count=1, flags=re.S | re.I)
     title = htmllib.escape(f"{item['company'] or 'Interview'} prep").replace("{", "&#123;")
-    return render("prep.html", title=title, content=html)
+    mode = "oa" if item["kind"] == "oa" else "interview"
+    return render("prep.html", item_id=str(int(item_id)), mode=mode, title=title, content=html)
+
+
+class QuizIn(BaseModel):
+    messages: list[dict] = []
+
+
+@app.post("/api/prep/{item_id}/quiz")
+def quiz_turn(item_id: int, body: QuizIn):
+    """One turn of "Quiz me". The page holds the transcript; nothing is stored."""
+    item = db.get_item(item_id)
+    if not item or not item["prep_md"]:
+        raise HTTPException(404, "No prep doc yet")
+    try:
+        messages = quiz.check(body.messages)
+    except quiz.BadTranscript as exc:
+        raise HTTPException(400, str(exc))
+    try:
+        text = quiz.reply("oa" if item["kind"] == "oa" else "interview", item["prep_md"], messages)
+    except Exception as exc:
+        print(f"[quiz] {type(exc).__name__}: {exc}", flush=True)
+        raise HTTPException(502, "Claude did not answer. Try again in a moment.")
+    return {"reply": text, "done": len(messages) >= 2 * quiz.QUESTIONS - 1}
