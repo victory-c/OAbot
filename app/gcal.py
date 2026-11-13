@@ -68,7 +68,9 @@ def _http_status(exc) -> int | None:
 
 def _rate_limited(exc) -> bool:
     """Google reports quota and rate limits as 403 too; those are temporary, not a missing permission."""
-    return "limit" in str(exc).lower() or "quota" in str(exc).lower()
+    # Look at Google's own reason text, not str(exc), which embeds the request URL and calendar id.
+    text = str(getattr(exc, "reason", None) or getattr(exc, "error_details", None) or exc).lower()
+    return "limit" in text or "quota" in text
 
 
 def _no_access(exc) -> bool:

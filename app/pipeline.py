@@ -3,6 +3,7 @@ import re
 import threading
 import traceback
 from datetime import datetime, timedelta
+from urllib.parse import urlsplit
 
 from . import classifier, config, db, gcal, notify, researcher, scheduler
 
@@ -51,6 +52,12 @@ def _run(item_id, subject, sender, body):
     except Exception as exc:
         traceback.print_exc()
         db.update_item(item_id, status="error", error=str(exc))
+        if isinstance(exc, gcal.CalendarUnavailable):  # nothing was blocked: say so instead of failing silently
+            try:
+                notify.send("Could not read Google Calendar, so nothing was blocked for a recruiting email. "
+                            "Open the dashboard and send it again.")
+            except Exception:
+                pass
     finally:
         _claimed_interviews.discard(item_id)
 
@@ -59,6 +66,7 @@ def _run(item_id, subject, sender, body):
 
 _ROLE_NOISE = {"the", "a", "an", "of", "for", "and", "role", "position", "program", "team", "summer", "fall",
                "winter", "spring", "us", "usa", "remote"}
+_NOT_INTERN = {"grad", "new", "full", "apprentice", "associate", "senior", "staff"}
 _STALE_AFTER = timedelta(days=14)  # how long a dismissed OA with no stated deadline keeps absorbing reminders
 
 
@@ -84,13 +92,27 @@ def _same_role(a: str | None, b: str | None) -> bool:
     """Same posting, allowing for how differently two emails word it. A reminder often names no
     role at all, so a missing role matches anything; 'intern' vs 'new grad' does not match."""
     ta, tb = _role_tokens(a), _role_tokens(b)
-    if not ta or not tb or ta <= tb or tb <= ta:
+    if not ta or not tb:
         return True
-    return len(ta & tb) / len(ta | tb) >= 0.5
+    if ("intern" in ta) != ("intern" in tb) and (ta | tb) & _NOT_INTERN:
+        return False  # an internship and a new-grad / full-time posting are never the same OA
+    if ta <= tb or tb <= ta:
+        return True
+    return len(ta & tb) / len(ta | tb) > 0.5  # strict: 'Quant Trader Intern' is not 'Quant Researcher Intern'
 
 
 def _link_key(link: str | None) -> str:
-    return (link or "").strip().rstrip("/")
+    """Same test link despite http/https, 'www.', host case, a trailing slash, a #fragment or utm_* tracking."""
+    link = (link or "").strip()
+    if not link:
+        return ""
+    try:
+        u = urlsplit(link if "//" in link else "//" + link)
+        host = (u.hostname or "").removeprefix("www.")
+        query = "&".join(sorted(q for q in u.query.split("&") if q and not q.lower().startswith("utm_")))
+        return f"{host}{u.path.rstrip('/')}" + (f"?{query}" if query else "")
+    except ValueError:
+        return link.rstrip("/")
 
 
 def _is_current(row: dict, now: datetime) -> bool:
@@ -103,7 +125,7 @@ def _is_current(row: dict, now: datetime) -> bool:
             return bool(row["event_end"]) and gcal.parse(row["event_end"]) > now
         # dismissed: honour it until its deadline, or for a while if it never had one
         return bool(row["deadline"]) or now - gcal.parse(row["created"]) <= _STALE_AFTER
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, AttributeError):
         return False  # unreadable dates: do not let this row block anything
 
 
@@ -118,9 +140,20 @@ def _existing_oa(item_id, info):
         return None  # "Unknown company" must never match another unknown company
     now = datetime.now(config.TZ)
     link = _link_key(info.link)
-    matches = [r for r in db.items_of_kind("oa", ("scheduled", "dismissed"), exclude_id=item_id)
-               if company_key(r["company"]) == key and _is_current(r, now)
-               and ((link and link == _link_key(r["link"])) or _same_role(info.role, r["role"]))]
+    rows = [r for r in db.items_of_kind("oa", ("scheduled", "dismissed"), exclude_id=item_id)
+            if company_key(r["company"]) == key and _is_current(r, now)]
+    same_link = [r for r in rows if link and link == _link_key(r["link"])]
+
+    def same_posting(r):
+        other = _link_key(r["link"])
+        if link and other and link != other:
+            # Two different test links: only a clearly stated, compatible role makes this a reminder.
+            # A missing role must not absorb a second-stage or second-posting assessment.
+            return bool(_role_tokens(info.role) and _role_tokens(r["role"])) and _same_role(info.role, r["role"])
+        return _same_role(info.role, r["role"])
+
+    # A row with the very same test link is the one this email is about; otherwise fall back to role.
+    matches = same_link or [r for r in rows if same_posting(r)]
     # A live block beats a dismissed one; among those, the newest.
     matches.sort(key=lambda r: (r["status"] == "scheduled", r["id"]))
     return matches[-1] if matches else None

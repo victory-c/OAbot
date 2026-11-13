@@ -19,6 +19,7 @@ from app import config  # noqa: E402
 # Point everything at a temp folder BEFORE db/gcal are imported (they open files at import).
 TMP = Path(tempfile.mkdtemp(prefix="oabot-test-"))
 config.DATA = TMP
+config.DEDUPE = True  # never inherit the demo switch from the shell or .env
 config.GOOGLE_TOKEN = TMP / "token.json"
 
 # An oabot.db from before this change, to prove the migration keeps old rows.
@@ -401,7 +402,33 @@ class Pipeline(unittest.TestCase):
         self.assertIsNone(item["event_start"])
         self.assertEqual(self.mock_events(), [])
 
+    def test_reminder_with_a_link_updates_that_oa_not_the_newest_one(self):
+        soon = (datetime.now(TZ) + timedelta(days=3)).isoformat()
+        later = (datetime.now(TZ) + timedelta(days=8)).isoformat()
+        a = self.email(kind="oa", company="Stark", role="Software Engineer Intern", deadline=soon, link="https://hr.com/t/intern")
+        b = self.email(kind="oa", company="Stark", role="Software Engineer, New Grad", deadline=later, link="https://hr.com/t/grad")
+        reminder = self.email(kind="oa", company="Stark", deadline=soon, link="https://hr.com/t/intern?utm_source=reminder")
+        self.assertEqual(reminder["duplicate_of"], a["id"])
+        self.assertEqual(db.get_item(b["id"])["status"], "scheduled")  # the new-grad block is untouched
+        self.assertEqual(len(self.mock_events()), 2)
+
+    def test_different_link_and_no_role_is_a_new_assessment(self):
+        self.email(kind="oa", company="Goldman", link="https://hackerrank.com/test/gs1")
+        stage2 = self.email(kind="oa", company="Goldman", link="https://gs.hirevue.com/interviews/zzz")
+        self.assertEqual(stage2["status"], "scheduled")
+        self.assertIsNone(stage2["duplicate_of"])
+
+    def test_link_key(self):
+        k = pipeline._link_key
+        self.assertEqual(k("https://codesignal.com/t/abc"), k("http://www.CodeSignal.com/t/abc/?utm_source=x#start"))
+        self.assertNotEqual(k("https://codesignal.com/t/abc"), k("https://codesignal.com/t/xyz"))
+        self.assertNotEqual(k("https://x.com/t?id=1"), k("https://x.com/t?id=2"))
+        self.assertEqual(k(None), "")
+
     def test_role_matching(self):
+        self.assertFalse(pipeline._same_role("Quant Trader Intern", "Quant Researcher Intern"))
+        self.assertFalse(pipeline._same_role("Software Engineer Intern", "Graduate Software Engineer"))
+        self.assertFalse(pipeline._same_role("Software Engineer Intern", "Software Engineer, Full Time"))
         same, diff = pipeline._same_role, lambda a, b: not pipeline._same_role(a, b)
         self.assertTrue(same("Software Engineering Intern (Summer 2027)", "Software Engineer Intern"))
         self.assertTrue(same("SWE Internship", None))            # reminders often name no role
