@@ -1,4 +1,6 @@
-# OAbot
+# Hire Me Maybe
+
+(The repo is still named `OAbot`.)
 
 **Recruiting emails come in. Time gets blocked and prep gets written. You just show up.**
 
@@ -7,10 +9,10 @@ Built at Hack With Claude (UC Berkeley, Nov 13 2026). Track 01: Agents in Action
 **Demoing? Read [DEMO.md](DEMO.md):** script, checklist, fallbacks, judge Q&A.
 
 Students miss online assessments (OAs) and walk into interviews unprepared, not because they
-can't do them but because deciding *when* costs mental energy they don't have. OAbot watches
+can't do them but because deciding *when* costs mental energy they don't have. Hire Me Maybe watches
 your inbox and does that part for you:
 
-| Email arrives | What OAbot does |
+| Email arrives | What Hire Me Maybe does |
 |---|---|
 | **OA invite** | Reads the deadline, looks at your calendar and bCourses workload, blocks the best slot (with the test link and a prep tip inside the event) |
 | **Interview confirmed** | Researches the company and interviewer on the web, reads your resume, writes a prep doc, blocks a prep session before the interview |
@@ -26,16 +28,19 @@ cp .env.example .env        # then put your ANTHROPIC_API_KEY in .env
 uvicorn app.main:app --reload --port 8000
 ```
 
-Open http://localhost:8000, click a **Sample** button, hit **Process**.
+Open http://localhost:8000, open **Paste an email**, click a sample button (for example **oa**), hit **Process email**.
 
 Without Google login it runs in **mock mode**: a fake class schedule and fake bCourses
 deadlines, and blocks are saved locally. Everything Claude does is real.
 
 On the dashboard: one card per email (what it is, the block, the *why*, the prep doc link or
-reply draft), and a **This week** strip showing your calendar, coursework deadlines and OAbot's blocks.
+reply draft), and a **This week** strip showing your calendar, coursework deadlines and Hire Me Maybe's blocks.
 
-Samples: `samples/*_email.txt` are the Sample buttons. `samples/judges/` has one interview email
-per hackathon judge; send one with `sh samples/judges/send.sh <name>` (no name lists them).
+Samples: `samples/*_email.txt` and one interview email per hackathon judge (`samples/judges/`) are the
+sample buttons. From a terminal: `sh samples/judges/send.sh <name>` (no name lists them).
+
+A second email about the same OA or interview shows as a quiet **Reminder** card and does not add a block.
+Set `OABOT_DEDUPE=0` in `.env` to switch that off. Clear the dashboard with `python -m app.db reset`.
 
 ## Connect the real things
 
@@ -44,7 +49,7 @@ per hackathon judge; send one with `sh samples/judges/send.sh <name>` (no name l
 2. OAuth consent screen: External, Testing. Add each teammate's Gmail under **Test users**
 3. Credentials -> Create OAuth client ID -> **Desktop app** -> download as `credentials.json` into this folder
 4. `python -m app.google_auth` (browser opens, click through the "unverified app" warning)
-5. Restart the server. The pills at the top turn green and the inbox is checked every 15 seconds.
+5. Restart the server. The chips in the header show Gmail watching and Calendar Google and the inbox is checked every 15 seconds.
    Only mail that arrives after the server starts is acted on (Promotions and Social are skipped)
 
 **bCourses**: bCourses -> Calendar -> *Calendar Feed* -> copy the link into `.env` as `BCOURSES_ICS_URL`.
@@ -93,6 +98,6 @@ breaks, and honest answers to the questions judges ask.
 - Runs on a laptop today, for one user; the same code would run on a server around the clock.
 - Gmail access is read-only. Calendar access reads your events to find free time and only ever creates new ones.
 - Prep docs come from public web pages and can be wrong. The judges' docs were generated ahead of time and cached.
-- No rescheduling if you skip a block, and a reminder email about the same OA creates a second block.
+- No rescheduling if you skip a block.
 
 Full list in [DEMO.md](DEMO.md#honest-limits).
