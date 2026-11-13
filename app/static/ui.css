@@ -66,12 +66,6 @@ h3 { margin:0; font:500 17px/1.35 var(--font-display); letter-spacing:-.01em; }
 .mark:hover .logo .q, .mark:focus-visible .logo .q { opacity:0; transform:scale(.6); }
 .mark:hover .logo .tick, .mark:focus-visible .logo .tick { stroke-dashoffset:0; transition:stroke-dashoffset 260ms 60ms var(--ease-enter); }
 
-/* status chips */
-.chips { display:flex; gap:6px; flex-wrap:wrap; list-style:none; padding:0; margin:0; }
-.chips li { display:inline-flex; align-items:center; gap:7px; font-size:13px; color:var(--muted); padding:5px 11px; border:1px solid var(--line); border-radius:99px; background:var(--card); }
-.chips li::before { content:""; width:7px; height:7px; border-radius:50%; background:var(--line-strong); }
-.chips li.on { color:var(--ink); } .chips li.on::before { background:var(--ok); }
-
 /* one card style */
 .card { background:var(--card); border:1px solid var(--line); border-radius:var(--r-lg); padding:20px; }
 
