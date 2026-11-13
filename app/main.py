@@ -1,4 +1,5 @@
 """Run:  uvicorn app.main:app --reload --port 8000"""
+import html as htmllib
 import re
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -6,12 +7,22 @@ from pathlib import Path
 import markdown
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import config, db, gcal, gmail_watch, pipeline
 
 STATE = {"gmail": False}
 TEMPLATES = Path(__file__).parent / "templates"
+
+
+def render(name: str, **values: str) -> str:
+    """Every page gets the same head (ui.css, fonts, favicon) and header from the shared partials."""
+    read = lambda n: (TEMPLATES / n).read_text(encoding="utf-8")
+    page = read(name).replace("{{head}}", read("_head.html")).replace("{{header}}", read("_header.html"))
+    for key, value in values.items():  # in order: put untrusted content last
+        page = page.replace("{{" + key + "}}", value)
+    return page
 
 
 @asynccontextmanager
@@ -23,6 +34,7 @@ async def lifespan(_app):
 
 
 app = FastAPI(title="OAbot", lifespan=lifespan)
+app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
 
 
 class EmailIn(BaseModel):
@@ -33,7 +45,7 @@ class EmailIn(BaseModel):
 
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
-    return (TEMPLATES / "dashboard.html").read_text()
+    return render("dashboard.html")
 
 
 @app.get("/api/status")
@@ -75,4 +87,4 @@ def prep(item_id: int):
     # The doc is built from web content: neutralise raw HTML and script links before rendering.
     html = markdown.markdown(item["prep_md"].replace("<", "&lt;"), extensions=["tables", "sane_lists"])
     html = re.sub(r'href="(?!https?://)[^"]*"', 'href="#"', html)
-    return (TEMPLATES / "prep.html").read_text().replace("{{title}}", f"{item['company']} prep").replace("{{content}}", html)
+    return render("prep.html", title=htmllib.escape(f"{item['company']} prep"), content=html)

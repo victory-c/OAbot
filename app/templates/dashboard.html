@@ -1,98 +1,164 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>OAbot</title>
+<html lang="en"><head>
+{{head}}
+<title>Hire Me Maybe</title>
+<meta name="description" content="Hire Me Maybe reads recruiting email, blocks time on your calendar and writes interview prep.">
 <style>
-  :root { --bg:#fafaf7; --card:#fff; --ink:#1a1a1a; --mute:#6b6b66; --line:#e6e4dc; --accent:#d97757; }
-  @media (prefers-color-scheme: dark) { :root { --bg:#191918; --card:#232321; --ink:#eee; --mute:#9a9a94; --line:#383835; } }
-  * { box-sizing: border-box; }
-  body { font: 15px/1.5 -apple-system, system-ui, sans-serif; background: var(--bg); color: var(--ink); margin: 0; }
-  main { max-width: 980px; margin: 0 auto; padding: 24px 16px 80px; }
-  header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
-  h1 { margin: 0; font-size: 1.5rem; } h1 span { color: var(--accent); }
-  .pills { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
-  .pill { font-size: .75rem; padding: 2px 9px; border-radius: 99px; border: 1px solid var(--line); color: var(--mute); }
-  .pill.on { border-color: #3a9a5c; color: #3a9a5c; }
-  .tag { color: var(--mute); margin: 4px 0 20px; }
-  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 14px; }
-  details summary { cursor: pointer; font-weight: 600; }
-  textarea, input { width: 100%; font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink); margin-top: 8px; }
-  textarea { min-height: 120px; }
-  button { font: inherit; padding: 7px 14px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--ink); cursor: pointer; margin: 8px 6px 0 0; }
-  button.go { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
-  .item-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-  .company { font-weight: 700; font-size: 1.05rem; }
-  .badge { font-size: .72rem; font-weight: 600; padding: 2px 8px; border-radius: 6px; text-transform: uppercase; letter-spacing: .03em; }
-  .scheduled, .prepped { background: #3a9a5c22; color: #3a9a5c; } .processing { background: #d9a43a22; color: #b98a1f; }
-  .needs_reply { background: #4a7fd922; color: #4a7fd9; } .ignored { background: #8882; color: var(--mute); } .error { background: #d94a4a22; color: #d94a4a; }
-  .row { margin-top: 6px; } .label { color: var(--mute); font-size: .8rem; }
-  .why { color: var(--mute); font-style: italic; }
-  pre { white-space: pre-wrap; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px; font: .85rem/1.5 ui-monospace, monospace; }
-  a { color: var(--accent); } .empty { color: var(--mute); text-align: center; padding: 32px 0; }
-  .spin { display:inline-block; width:10px; height:10px; border:2px solid currentColor; border-right-color:transparent; border-radius:50%; animation:s .7s linear infinite; }
-  @keyframes s { to { transform: rotate(360deg); } }
+  /* dashboard-only layout; everything shared lives in /static/ui.css */
+  .intro { padding:40px 0 28px; display:grid; gap:20px; grid-template-columns:minmax(0,1fr) auto; align-items:end; }
+  .intro h1 { max-width:20ch; }
+  .tally { display:flex; gap:24px; margin:0; }
+  .tally div { min-width:64px; } .tally dt { font-size:12px; color:var(--muted); } .tally dd { margin:2px 0 0; font:500 28px/1 var(--font-display); letter-spacing:-.03em; font-variant-numeric:tabular-nums; }
+
+  .paste { margin-bottom:28px; padding:0; }
+  .paste summary { list-style:none; cursor:pointer; display:flex; align-items:center; gap:10px; padding:16px 20px; min-height:56px; font-weight:500; border-radius:var(--r-lg); }
+  .paste summary::-webkit-details-marker { display:none; }
+  .paste summary .chev { margin-left:auto; width:14px; height:14px; color:var(--muted); transition:transform var(--m-in) var(--ease); }
+  .paste[open] summary .chev { transform:rotate(180deg); }
+  .paste summary small { color:var(--muted); font-weight:400; font-size:14px; }
+  .paste .body { padding:0 20px 20px; display:grid; gap:12px; }
+  .actions { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  .actions .hint { color:var(--muted); font-size:13px; margin-right:4px; }
+
+  .list-head { display:flex; align-items:baseline; gap:12px; margin:0 0 12px; }
+  .list-head span { color:var(--muted); font-size:14px; }
+  #items { display:grid; gap:12px; }
+  .item { display:grid; gap:14px; }
+  .item-head { display:flex; gap:12px; align-items:flex-start; flex-wrap:wrap; }
+  .who { min-width:0; flex:1; }
+  .company { font-size:18px; overflow-wrap:anywhere; }
+  .kind { color:var(--muted); font-size:14px; margin-top:2px; }
+  .badge { display:inline-flex; align-items:center; gap:6px; font-size:13px; font-weight:500; padding:4px 10px; border-radius:99px; white-space:nowrap; background:color-mix(in oklab, currentColor 12%, transparent); }
+  .badge::before { content:""; width:6px; height:6px; border-radius:50%; background:currentColor; }
+  .badge.scheduled, .badge.prepped { color:var(--ok); } .badge.processing { color:var(--warn); }
+  .badge.needs_reply { color:var(--info); } .badge.ignored { color:var(--muted); } .badge.error { color:var(--bad); }
+  .badge.processing::before { width:9px; height:9px; background:none; border:2px solid currentColor; border-right-color:transparent; animation:spin .8s linear infinite; }
+  .facts { display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:12px 24px; margin:0; padding:14px 0 0; border-top:1px solid var(--line); }
+  .facts dt { font-size:12px; color:var(--muted); } .facts dd { margin:2px 0 0; font-variant-numeric:tabular-nums; }
+  .why { color:var(--muted); font-size:14px; }
+  .note { margin:0; color:var(--muted); font-size:14px; }
+  .draft h4 { margin:0 0 6px; font-size:12px; font-weight:500; color:var(--muted); }
+  .err { margin:0; color:var(--bad); font-size:14px; }
+  .item-foot { display:flex; flex-wrap:wrap; gap:8px; }
+  .empty { text-align:center; padding:48px 20px; color:var(--muted); border:1px dashed var(--line-strong); border-radius:var(--r-lg); }
+  .empty strong { display:block; color:var(--ink); font-weight:500; margin-bottom:4px; }
+
+  @media (max-width:720px) {
+    .intro { grid-template-columns:1fr; padding-top:28px; }
+    .paste summary { flex-wrap:wrap; row-gap:2px; padding-right:44px; position:relative; }
+    .paste summary small { flex-basis:100%; }
+    .paste summary .chev { position:absolute; right:20px; top:22px; }
+    .actions .btn, .item-foot .btn { flex:1 1 auto; }
+  }
 </style></head>
-<body><main>
-  <header><h1>OA<span>bot</span></h1><div class="pills" id="pills"></div></header>
-  <p class="tag">Recruiting emails come in. Time gets blocked and prep gets written. You just show up.</p>
+<body>
+{{header}}
+<main class="wrap" id="main">
+  <section class="intro" aria-labelledby="title">
+    <div class="enter">
+      <h1 id="title">Recruiting inbox for interviews and online assessments</h1>
+      <p class="lead">Hire Me Maybe reads each recruiting email, blocks the time on your calendar and writes a prep doc before the interview.</p>
+    </div>
+    <dl class="tally" id="tally" aria-live="polite"></dl>
+  </section>
 
-  <div class="card">
-    <details id="paste"><summary>Paste an email (demo and fallback)</summary>
-      <input id="subject" placeholder="Subject">
-      <textarea id="body" placeholder="Paste the email body"></textarea>
-      <button class="go" onclick="send()">Process</button><span id="samples"></span>
-    </details>
-  </div>
+  <details class="card paste" id="paste">
+    <summary>Paste an email <small>for a demo, or when Gmail is off</small>
+      <svg class="chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg></summary>
+    <form class="body" id="form">
+      <label>Subject<input id="subject" autocomplete="off"></label>
+      <label>Email body<textarea id="body" required></textarea></label>
+      <div class="actions">
+        <button class="btn btn--primary" type="submit" id="go">Process email</button>
+        <span class="hint" id="samples-hint" hidden>or load a sample:</span>
+        <span class="actions" id="samples"></span>
+      </div>
+    </form>
+  </details>
 
-  <div id="items"><div class="empty">Waiting for recruiting emails&hellip;</div></div>
+  <section aria-labelledby="inbox-h">
+    <div class="list-head"><h2 id="inbox-h">Emails</h2><span id="count"></span></div>
+    <div id="items"><div class="empty"><strong>No recruiting emails yet</strong>New ones show up here a few seconds after they arrive.</div></div>
+  </section>
 </main>
+
 <script>
 const $ = id => document.getElementById(id);
 const esc = s => (s ?? '').toString().replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const when = iso => iso ? new Date(iso).toLocaleString([], {weekday:'short', month:'short', day:'numeric', hour:'numeric', minute:'2-digit'}) : '';
+const time = iso => iso ? new Date(iso).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'}) : '';
 const safeUrl = u => /^https?:\/\//i.test(u || '') ? u : '';
+const arrow = '<svg class="m-arrow" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3 8h10M9 4l4 4-4 4"/></svg>';
+const KIND = {oa:'Online assessment', interview_scheduled:'Interview', interview_needs_availability:'Interview, needs your times', rejection:'Rejection', other:'Not recruiting'};
+const STATUS = {scheduled:'Scheduled', prepped:'Prep ready', processing:'Working', needs_reply:'Needs reply', ignored:'Ignored', error:'Error'};
+const EMPTY = '<div class="empty"><strong>No recruiting emails yet</strong>New ones show up here a few seconds after they arrive.</div>';
 
-async function send() {
+$('form').addEventListener('submit', async e => {
+  e.preventDefault();
   const body = $('body').value.trim(); if (!body) return;
-  await fetch('/api/ingest', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({subject: $('subject').value, body})});
-  $('subject').value = ''; $('body').value = ''; refresh();
+  $('go').disabled = true; $('go').textContent = 'Processing…';
+  try {
+    await fetch('/api/ingest', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({subject: $('subject').value, body})});
+    $('subject').value = ''; $('body').value = '';
+  } finally { $('go').disabled = false; $('go').textContent = 'Process email'; refresh(); }
+});
+
+// The scheduler writes one short reason per line. Older items hold a paragraph: break it at
+// sentences and at ", which / , so / , and" so it still skims.
+function points(text) {
+  const t = (text || '').trim(); if (!t) return [];
+  const lines = t.includes('\n') ? t.split('\n')
+    : t.split(/(?<=[.!?])\s+(?=[A-Z])/).flatMap(s => s.split(/,\s+(?:which|so|and)\s+/));
+  return lines.map(s => s.trim().replace(/[.;]+$/, '')).filter(Boolean).map(s => s[0].toUpperCase() + s.slice(1));
 }
 
 function card(i) {
-  const label = {oa:'Online assessment', interview_scheduled:'Interview', interview_needs_availability:'Interview: needs your times', rejection:'Rejection', other:'Not recruiting'}[i.kind] || '';
-  let h = `<div class="card"><div class="item-head"><span class="company">${esc(i.company || i.subject || 'New email')}</span>
-    <span class="badge ${esc(i.status)}">${i.status === 'processing' ? '<span class="spin"></span> working' : esc(i.status.replace('_',' '))}</span>
-    <span class="label">${esc(label)}${i.role ? ' &middot; ' + esc(i.role) : ''}</span></div>`;
-  if (i.deadline) h += `<div class="row"><span class="label">Due</span> ${esc(when(i.deadline))}</div>`;
-  if (i.event_start) {
-    const link = safeUrl(i.event_link);
-    h += `<div class="row"><span class="label">Blocked</span> <b>${esc(when(i.event_start))}</b> to ${esc(new Date(i.event_end).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'}))}
-      ${link ? ` &middot; <a href="${esc(link)}" target="_blank" rel="noopener">open in Calendar</a>` : ''}</div>`;
-  }
-  if (i.reasoning) h += `<div class="row why">${esc(i.reasoning)}</div>`;
-  if (i.has_prep) h += `<div class="row"><a href="/prep/${i.id}"><b>Open prep doc &rarr;</b></a></div>`;
-  else if (i.status === 'processing' && (i.kind || '').startsWith('interview')) h += `<div class="row label">Researching the company and interviewer&hellip;</div>`;
-  if (i.draft_reply) h += `<div class="row"><span class="label">Reply draft (not sent)</span><pre>${esc(i.draft_reply)}</pre></div>`;
-  if (i.error) h += `<div class="row" style="color:#d94a4a">${esc(i.error)}</div>`;
-  return h + '</div>';
+  const status = i.status || '';
+  const kind = KIND[i.kind] || '';
+  let h = `<article class="card item"><div class="item-head"><div class="who">
+      <h3 class="company">${esc(i.company || i.subject || 'New email')}</h3>
+      ${kind || i.role ? `<div class="kind">${esc(kind)}${kind && i.role ? ' &middot; ' : ''}${esc(i.role || '')}</div>` : ''}
+    </div><span class="badge ${esc(status)}">${esc(STATUS[status] || status.replace(/_/g, ' '))}</span></div>`;
+  const facts = [];
+  if (i.deadline) facts.push(`<div><dt>Due</dt><dd>${esc(when(i.deadline))}</dd></div>`);
+  if (i.event_start) facts.push(`<div><dt>On your calendar</dt><dd>${esc(when(i.event_start))} to ${esc(time(i.event_end))}</dd></div>`);
+  if (facts.length) h += `<dl class="facts">${facts.join('')}</dl>`;
+  const why = points(i.reasoning);
+  if (why.length) h += `<ul class="points why">${why.map(p => `<li>${esc(p)}</li>`).join('')}</ul>`;
+  if (status === 'processing' && !i.has_prep && (i.kind || '').startsWith('interview')) h += `<p class="note">Researching the company and interviewer&hellip;</p>`;
+  if (i.draft_reply) h += `<div class="draft"><h4>Reply draft, not sent</h4><pre>${esc(i.draft_reply)}</pre></div>`;
+  if (i.error) h += `<p class="err">${esc(i.error)}</p>`;
+  const link = safeUrl(i.event_link), foot = [];
+  if (i.has_prep) foot.push(`<a class="btn btn--sm btn--primary" href="/prep/${encodeURIComponent(i.id)}">Read prep doc ${arrow}</a>`);
+  if (link) foot.push(`<a class="btn btn--sm" href="${esc(link)}" target="_blank" rel="noopener">See in Calendar ${arrow}</a>`);
+  if (foot.length) h += `<div class="item-foot">${foot.join('')}</div>`;
+  return h + '</article>';
 }
 
+let last = '';
 async function refresh() {
-  const items = await (await fetch('/api/items')).json();
-  $('items').innerHTML = items.length ? items.map(card).join('') : '<div class="empty">Waiting for recruiting emails&hellip;</div>';
+  let items;
+  try { items = await (await fetch('/api/items')).json(); } catch { return; }
+  const html = items.length ? items.map(card).join('') : EMPTY;
+  if (html !== last) { $('items').innerHTML = html; last = html; }   // only redraw on change, so hover and focus hold
+  const n = s => items.filter(i => s.includes(i.status)).length;
+  $('count').textContent = items.length ? `${items.length} total` : '';
+  $('tally').innerHTML = items.length ? `<div><dt>Scheduled</dt><dd>${n(['scheduled','prepped'])}</dd></div>
+    <div><dt>Needs reply</dt><dd>${n(['needs_reply'])}</dd></div><div><dt>Working</dt><dd>${n(['processing'])}</dd></div>` : '';
 }
 
 async function init() {
-  const s = await (await fetch('/api/status')).json();
-  $('pills').innerHTML = `<span class="pill ${s.gmail ? 'on' : ''}">Gmail ${s.gmail ? 'watching' : 'off'}</span>
-    <span class="pill ${s.calendar === 'google' ? 'on' : ''}">Calendar: ${esc(s.calendar)}</span>
-    <span class="pill ${s.bcourses ? 'on' : ''}">bCourses ${s.bcourses ? 'connected' : 'mock'}</span>`;
-  if (!s.gmail) $('paste').open = true;
-  const samples = await (await fetch('/api/samples')).json();
-  for (const [name, e] of Object.entries(samples)) {
-    const b = document.createElement('button'); b.textContent = 'Sample: ' + name;
-    b.onclick = () => { $('subject').value = e.subject; $('body').value = e.body; };
-    $('samples').appendChild(b);
-  }
+  window.appStatus.then(s => { if (s && !s.gmail) $('paste').open = true; });
+  try {
+    const samples = await (await fetch('/api/samples')).json();
+    for (const [name, e] of Object.entries(samples)) {
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'btn btn--sm'; b.textContent = name.replace(/_/g, ' ');
+      b.onclick = () => { $('subject').value = e.subject; $('body').value = e.body; $('body').focus(); };
+      $('samples').appendChild(b);
+    }
+    $('samples-hint').hidden = !Object.keys(samples).length;
+  } catch {}
   refresh(); setInterval(refresh, 2500);
 }
 init();

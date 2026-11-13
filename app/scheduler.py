@@ -22,15 +22,17 @@ is due. Prefer lighter days.
 - Prefer times a student is sharp (late morning, afternoon, early evening) over late night.
 - Follow the timing preference given with the task.
 
-Output times as ISO 8601 with the student's UTC offset. In `reasoning`, say in one or two plain \
-sentences why this slot beats the alternatives, naming the specific classes or deadlines you \
-worked around. In `tip`, give one concrete, useful preparation tip for this specific task."""
+Output times as ISO 8601 with the student's UTC offset. In `reasons`, give 2 to 4 short bullet \
+points on why this slot beats the alternatives, one fact each, naming the specific classes or \
+deadlines you worked around. Each under 12 words, key fact first, no full stop, e.g. \
+"Day before the Wednesday 2:00 PM interview" or "Clear of Sunday's CS 170 Midterm 2". \
+In `tip`, give one concrete, useful preparation tip for this specific task."""
 
 
 class Slot(BaseModel):
     start: str = Field(description="ISO 8601 with offset")
     end: str = Field(description="ISO 8601 with offset")
-    reasoning: str
+    reasons: list[str] = Field(description="2 to 4 short bullet points, each under 12 words")
     tip: str
 
 
@@ -67,7 +69,8 @@ EARLY = "Earlier is better: when two slots are otherwise equal, take the sooner 
 
 
 def pick_slot(task: str, duration_minutes: int, hard_deadline: Optional[datetime], preference: str = EARLY) -> dict:
-    """Returns {start, end, reasoning, tip} with datetimes. Raises if no slot exists."""
+    """Returns {start, end, reasoning, tip} with datetimes; reasoning is one short point per line.
+    Raises if no slot exists."""
     now = datetime.now(config.TZ)
     window_start = now + timedelta(minutes=30)
     window_end = hard_deadline or (now + timedelta(days=5))
@@ -99,7 +102,8 @@ def pick_slot(task: str, duration_minutes: int, hard_deadline: Optional[datetime
         except ValueError as exc:
             problem = f"could not read the times: {exc}"
         if problem is None:
-            return {"start": start, "end": end, "reasoning": slot.reasoning, "tip": slot.tip}
+            reasons = [r.strip().lstrip("-\u2022 ").rstrip(".") for r in slot.reasons if r.strip()]
+            return {"start": start, "end": end, "reasoning": "\n".join(reasons), "tip": slot.tip}
         messages += [
             {"role": "assistant", "content": response.content},
             {"role": "user", "content": f"That slot does not work: {problem}. Pick a different one."},

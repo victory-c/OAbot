@@ -1,12 +1,16 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{title}}</title>
+<html lang="en"><head>
+{{head}}
+<title>{{title}} &middot; Hire Me Maybe</title>
 <style>
-  body { font: 16px/1.6 -apple-system, system-ui, sans-serif; max-width: 720px; margin: 0 auto; padding: 24px 16px 80px; color: #1a1a1a; background: #fafaf7; }
-  h1 { font-size: 1.6rem; line-height: 1.25; }
-  h2 { font-size: 1.1rem; margin-top: 2rem; padding-bottom: 4px; border-bottom: 2px solid #d97757; }
-  a { color: #b5532f; } li { margin: 4px 0; }
-  .back { font-size: .9rem; }
-  @media (prefers-color-scheme: dark) { body { background: #191918; color: #eee; } a { color: #e8956f; } }
+  /* prep-only layout; everything shared lives in /static/ui.css */
+  .back { display:inline-flex; align-items:center; gap:8px; min-height:44px; margin:20px 0 8px; font-size:15px; }
+  .prose { padding-bottom:16px; }
 </style></head>
-<body><a class="back" href="/">&larr; Dashboard</a>{{content}}</body></html>
+<body>
+{{header}}
+<main class="wrap--reading" id="main">
+  <a class="link back" href="/"><svg class="m-arrow m-arrow--back" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M13 8H3M7 4 3 8l4 4"/></svg>Back to inbox</a>
+  <article class="prose">{{content}}</article>
+</main>
+</body></html>
