@@ -182,7 +182,8 @@ def insert_event(title: str, start: datetime, end: datetime, description: str = 
     if svc is None:
         events = _mock_created()
         event_id = f"mock-{uuid.uuid4().hex[:12]}"
-        events.append({"id": event_id, "title": title, "start": start.isoformat(), "end": end.isoformat()})
+        events.append({"id": event_id, "title": title, "start": start.isoformat(), "end": end.isoformat(),
+                       "description": description})
         MOCK_FILE.write_text(json.dumps(events, indent=2))
         return {"id": event_id, "link": ""}
     body = {

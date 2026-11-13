@@ -35,7 +35,7 @@ _old.executescript("""
 _old.commit()
 _old.close()
 
-from app import classifier, db, gcal, gmail_watch, google_auth, pipeline, researcher, scheduler  # noqa: E402
+from app import classifier, db, gcal, gmail_watch, google_auth, pipeline, researcher, scheduler, warmup  # noqa: E402
 from app.classifier import EmailInfo  # noqa: E402
 
 TZ = config.TZ
@@ -290,7 +290,8 @@ class Pipeline(unittest.TestCase):
         self.slot_calls = []
         now = datetime.now(TZ).replace(minute=0, second=0, microsecond=0)
         self.slot_start = now + timedelta(days=1, hours=2)
-        self._orig = (classifier.classify_email, scheduler.pick_slot, researcher.write_prep_doc, pipeline.notify.send)
+        self._orig = (classifier.classify_email, scheduler.pick_slot, researcher.write_prep_doc, pipeline.notify.send,
+                      warmup.write_plan)
         self.during_slot = None  # hook: runs inside pick_slot, while "Claude is thinking"
         self.fail_slot = False
         self.busy_at_pick = []
@@ -311,9 +312,17 @@ class Pipeline(unittest.TestCase):
 
         scheduler.pick_slot = pick_slot
         researcher.write_prep_doc = lambda *a: "# prep"
+        self.warmup_calls = []
+
+        def write_plan(company, role, platform, minutes, body):
+            self.warmup_calls.append(platform)
+            return {"markdown": f"# {company}: OA warm-up\n", "calendar": "Warm-up:\n• 10 min: two easy arrays"}
+
+        warmup.write_plan = write_plan
 
     def tearDown(self):
-        classifier.classify_email, scheduler.pick_slot, researcher.write_prep_doc, pipeline.notify.send = self._orig
+        (classifier.classify_email, scheduler.pick_slot, researcher.write_prep_doc, pipeline.notify.send,
+         warmup.write_plan) = self._orig
 
     def email(self, item_id=None, **info):
         self.next_info = EmailInfo(summary="s", **info)
@@ -568,6 +577,27 @@ class Pipeline(unittest.TestCase):
         final = db.get_item(dup["item"]["id"])
         self.assertEqual(final["prep_md"], "# prep")
         self.assertEqual(final["event_start"], original["event_start"])
+
+    def test_oa_gets_warmup_plan_in_block_and_prep_page(self):
+        due = (datetime.now(TZ) + timedelta(days=4)).isoformat()
+        item = self.email(kind="oa", company="Ramp", role="SWE Intern", deadline=due,
+                          link="https://app.codesignal.com/test/abc", platform="online assessment")
+        self.assertEqual(item["status"], "scheduled")
+        self.assertEqual(self.warmup_calls, ["CodeSignal"])  # from the link host, not the vague platform text
+        self.assertEqual(item["prep_md"], "# Ramp: OA warm-up\n")
+        desc = self.mock_events()[-1]["description"]
+        self.assertIn("10 min: two easy arrays", desc)
+        self.assertIn(f"/prep/{item['id']}", desc)
+
+    def test_oa_still_scheduled_when_warmup_fails(self):
+        def boom(*a):
+            raise RuntimeError("API down")
+        warmup.write_plan = boom
+        due = (datetime.now(TZ) + timedelta(days=4)).isoformat()
+        item = self.email(kind="oa", company="Plaid", deadline=due)
+        self.assertEqual(item["status"], "scheduled")
+        self.assertIsNone(item["prep_md"])
+        self.assertIn("Prep tip: t", self.mock_events()[-1]["description"])
 
     def test_company_key(self):
         self.assertEqual(pipeline.company_key("Stripe, Inc."), pipeline.company_key("stripe"))
