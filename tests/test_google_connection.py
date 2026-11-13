@@ -686,6 +686,61 @@ class Pipeline(unittest.TestCase):
         self.assertIsNone(item["prep_md"])
         self.assertIn("Prep tip: t", self.mock_events()[-1]["description"])
 
+    # ---- Move this block ----
+
+    def event_ids(self):
+        return [e["id"] for e in self.mock_events()]
+
+    def test_move_oa_block_to_a_new_slot(self):
+        due = (datetime.now(TZ) + timedelta(days=4)).isoformat()
+        item = self.email(kind="oa", company="Retool", deadline=due)
+        old_id, old_start = item["event_id"], item["event_start"]
+        self.assertEqual(pipeline.move_block(item["id"]), {"ok": True, "error": None})
+        self.assertEqual(db.get_item(item["id"])["status"], "processing")
+        self.assertFalse(pipeline.move_block(item["id"])["ok"])  # one move at a time
+        after = self.wait_settled(item["id"])
+        self.assertEqual(after["status"], "scheduled")
+        self.assertNotEqual(after["event_start"], old_start)
+        self.assertTrue(after["reasoning"].startswith("Moved from"))
+        self.assertIn("at your request", after["reasoning"])
+        ids = self.event_ids()
+        self.assertNotIn(old_id, ids)  # old block gone
+        self.assertIn(after["event_id"], ids)
+        self.assertIn(old_id, self.busy_at_pick)  # the old block was still there (busy) while picking
+        self.assertEqual(after["prep_md"], "# Retool: OA warm-up\n")
+
+    def test_move_interview_prep_block(self):
+        start = (datetime.now(TZ) + timedelta(days=3)).replace(hour=14, minute=0).isoformat()
+        item = self.email(kind="interview_scheduled", company="Vercel", interview_start=start)
+        self.assertEqual(item["status"], "prepped")
+        old_id = item["event_id"]
+        self.assertTrue(pipeline.move_block(item["id"])["ok"])
+        after = self.wait_settled(item["id"])
+        self.assertEqual(after["status"], "prepped")
+        self.assertNotEqual(after["event_id"], old_id)
+        self.assertNotIn(old_id, self.event_ids())
+        self.assertTrue(after["reasoning"].startswith("Moved from"))
+
+    def test_failed_move_keeps_the_old_block(self):
+        due = (datetime.now(TZ) + timedelta(days=4)).isoformat()
+        item = self.email(kind="oa", company="Linear", deadline=due)
+        self.fail_slot = True
+        self.assertTrue(pipeline.move_block(item["id"])["ok"])
+        after = self.wait_settled(item["id"])
+        self.assertEqual(after["status"], "scheduled")
+        self.assertEqual(after["event_id"], item["event_id"])
+        self.assertIn(item["event_id"], self.event_ids())
+        self.assertIn("Could not move it", after["error"])
+
+    def test_move_refused_for_started_or_unmovable(self):
+        due = (datetime.now(TZ) + timedelta(days=4)).isoformat()
+        item = self.email(kind="oa", company="Brex", deadline=due)
+        self.end_block(item["id"])
+        self.assertIn("already started", pipeline.move_block(item["id"])["error"])
+        other = self.email(kind="other")
+        self.assertFalse(pipeline.move_block(other["id"])["ok"])
+        self.assertFalse(pipeline.move_block(999999)["ok"])
+
     def test_company_key(self):
         self.assertEqual(pipeline.company_key("Stripe, Inc."), pipeline.company_key("stripe"))
         self.assertEqual(pipeline.company_key("Jane Street"), pipeline.company_key("JaneStreet LLC"))

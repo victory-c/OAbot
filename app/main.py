@@ -77,6 +77,10 @@ def items():
         r["at_risk"] = followup.at_risk(r, now)
         # Ask on the card as soon as the block ends, without waiting for the next background check.
         r["ask_followup"] = r.get("kind") == "oa" and followup.block_ended(r, now) and r.get("followup") in (None, "asked")
+        start = followup._parse(r.get("event_start"))
+        r["can_move"] = bool(start and start > now and (
+            (r.get("kind") == "oa" and r.get("status") == "scheduled")
+            or (r.get("kind") == "interview_scheduled" and r.get("status") == "prepped")))
     return rows
 
 
@@ -88,6 +92,15 @@ class FollowupIn(BaseModel):
 def answer_followup(item_id: int, body: FollowupIn):
     """Done / Skipped / Reschedule on an OA whose block has passed."""
     result = pipeline.answer_followup(item_id, body.answer)
+    if not result["ok"]:
+        raise HTTPException(400, result["error"])
+    return result
+
+
+@app.post("/api/items/{item_id}/move")
+def move_block(item_id: int):
+    """Move an OA or prep block that is still ahead to the next best slot."""
+    result = pipeline.move_block(item_id)
     if not result["ok"]:
         raise HTTPException(400, result["error"])
     return result
