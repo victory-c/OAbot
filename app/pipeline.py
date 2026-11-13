@@ -51,6 +51,7 @@ def submit(subject: str, sender: str, body: str, source: str = "paste") -> int:
 
 
 def _run(item_id, subject, sender, body):
+    info = None
     try:
         info = classifier.classify_email(subject, sender, body)
         db.update_item(item_id, kind=info.kind, company=info.company, role=info.role,
@@ -72,6 +73,12 @@ def _run(item_id, subject, sender, body):
         for dup in db.duplicates_of(item_id):
             db.update_item(dup["id"], status="error",
                            error=f"The earlier email this repeats failed ({exc}). Paste this one again.")
+        if info is not None and info.kind == "oa" and not isinstance(exc, gcal.CalendarUnavailable) \
+                and not _is_dismissed(item_id):  # an OA with no block is one the student may miss: say so
+            try:
+                notify.send(_oa_failed_message(info, exc))
+            except Exception:
+                pass
         if isinstance(exc, gcal.CalendarUnavailable):  # nothing was blocked: say so instead of failing silently
             try:
                 notify.send("Could not read Google Calendar, so nothing was blocked for a recruiting email. "
@@ -80,6 +87,29 @@ def _run(item_id, subject, sender, body):
                 pass
     finally:
         _claimed_interviews.discard(item_id)
+
+
+def _due_soon(deadline) -> str:
+    """' (due in 3 hours)' when under 24 hours away, which notify turns into an URGENT ping; else ''."""
+    if not deadline:
+        return ""
+    minutes = int((deadline - datetime.now(config.TZ)).total_seconds() // 60)
+    if minutes <= 0 or minutes >= 24 * 60:
+        return ""
+    if minutes < 60:
+        return f" (due in {minutes} minutes)"
+    hours = minutes // 60
+    return f" (due in {hours} hour{'s' if hours != 1 else ''})"
+
+
+def _oa_failed_message(info, exc) -> str:
+    company = info.company or "Unknown company"
+    deadline = gcal.parse(info.deadline) if info.deadline else None
+    head = f"Could not block time for the {company} OA" + (f", due {_fmt(deadline)}" if deadline else "")
+    lines = [head + _due_soon(deadline) + ".", str(exc)]
+    if info.link:
+        lines.append(f"Start here: {info.link}")
+    return "\n".join(lines)
 
 
 # ---------- status writes that respect Dismiss ----------
@@ -262,7 +292,10 @@ def _handle_oa(item_id, info, company):
                 when = f" for {_fmt(gcal.parse(existing['event_start']))}" if existing["event_start"] else ""
                 _mark_duplicate(item_id, existing, f"Reminder for the {company} OA. Already blocked{when}, "
                                                     "which still beats the deadline. No new block.")
-                notify.send(f"Reminder from {company}: your OA is already blocked{when}.")
+                # A reminder often restates no deadline: the original email's still applies.
+                due = deadline or (gcal.parse(existing["deadline"]) if existing["deadline"] else None)
+                notify.send(f"Reminder from {company}: your OA is already blocked{when}"
+                            + (f", due {_fmt(due)}{_due_soon(due)}" if due else "") + ".")
                 return
             # The reminder shows an earlier deadline than the current block allows: move it.
             # Free the old slot first so the scheduler may reuse that time.
