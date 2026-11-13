@@ -181,7 +181,14 @@ def samples():
     # One interview email per judge, so the judge move works from the dashboard when Gmail is off.
     for path in sorted((config.ROOT / "samples" / "judges").glob("*.txt")):
         subject, _, body = path.read_text().partition("\n\n")
-        out["judge " + path.stem] = {"subject": subject.removeprefix("Subject: "), "body": body}
+        # "voicebit-jay-patel" -> "judge Jay Patel (VoiceBit)"; the company's spelling comes from its prep doc title
+        words = path.stem.split("-")
+        name = " ".join(w.capitalize() for w in words[-2:])
+        company = " ".join(w.capitalize() for w in words[:-2])
+        doc = config.ROOT / "samples" / "prep_cache" / f"{path.stem}.md"
+        if doc.exists():
+            company = doc.read_text().splitlines()[0].removeprefix("# ").split(":")[0].strip() or company
+        out[f"judge {name} ({company})"] = {"subject": subject.removeprefix("Subject: "), "body": body}
     return out
 
 
