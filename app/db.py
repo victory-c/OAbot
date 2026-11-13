@@ -15,6 +15,7 @@ _conn.executescript(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         created TEXT, source TEXT, sender TEXT, subject TEXT, body TEXT,
         status TEXT,            -- processing | scheduled | prepped | needs_reply | ignored | error
+                                -- | duplicate | replaced | dismissed
         kind TEXT, company TEXT, role TEXT, deadline TEXT, link TEXT,
         info_json TEXT,         -- full classifier output
         event_title TEXT, event_start TEXT, event_end TEXT, event_link TEXT,
@@ -26,6 +27,17 @@ _conn.executescript(
     CREATE TABLE IF NOT EXISTS seen (gmail_id TEXT PRIMARY KEY);
     """
 )
+
+# Columns added after the first version. Added in place so existing data/oabot.db files keep working.
+_NEW_COLUMNS = {
+    "event_id": "TEXT",          # calendar event id, so the block can be deleted or moved
+    "duplicate_of": "INTEGER",   # for reminders: the item that already covers this
+}
+_have = {r["name"] for r in _conn.execute("PRAGMA table_info(items)")}
+for _col, _type in _NEW_COLUMNS.items():
+    if _col not in _have:
+        _conn.execute(f"ALTER TABLE items ADD COLUMN {_col} {_type}")
+_conn.commit()
 
 
 def add_item(source, sender, subject, body) -> int:
@@ -58,6 +70,17 @@ def get_item(item_id: int):
 def list_items():
     with _lock:
         rows = _conn.execute("SELECT * FROM items ORDER BY id DESC").fetchall()
+    return [dict(r) for r in rows]
+
+
+def items_of_kind(kind: str, statuses: tuple[str, ...], exclude_id: int | None = None) -> list[dict]:
+    """Items of one kind in any of the given statuses, oldest first (for duplicate checks)."""
+    marks = ",".join("?" * len(statuses))
+    with _lock:
+        rows = _conn.execute(
+            f"SELECT * FROM items WHERE kind=? AND status IN ({marks}) AND id IS NOT ? ORDER BY id",
+            (kind, *statuses, exclude_id),
+        ).fetchall()
     return [dict(r) for r in rows]
 
 
