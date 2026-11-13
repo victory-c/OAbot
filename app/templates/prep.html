@@ -65,6 +65,7 @@
   $('quiz-lead').textContent = oa
     ? 'Five practice items in the style of this test, with feedback on each answer.'
     : 'A five-question mock interview built from this doc and your resume, with feedback after each answer.';
+  const HINT = "I'm stuck. Can I have a hint?";   // must match quiz.HINT: hints do not count as answers
   let messages = [], busy = false, done = false;
 
   function turn(role, text, extra) {
@@ -78,7 +79,7 @@
 
   async function ask() {
     busy = true; $('err').textContent = '';
-    for (const b of ['send', 'hint', 'start']) $(b).disabled = true;
+    for (const b of ['send', 'hint', 'start', 'restart']) $(b).disabled = true;
     const wait = turn('assistant', 'Thinking…', 'turn--wait');
     try {
       const r = await fetch(`/api/prep/${encodeURIComponent(id)}/quiz`, {
@@ -99,10 +100,11 @@
         $('log').lastElementChild?.remove();
         $('text').value = last.content;
       }
+      if (!messages.length) $('start-row').hidden = false;   // first request failed: leave a way to retry
       $('err').textContent = e.message;
     } finally {
       busy = false;
-      for (const b of ['send', 'hint', 'start']) $(b).disabled = false;
+      for (const b of ['send', 'hint', 'start', 'restart']) $(b).disabled = false;
     }
   }
 
@@ -116,6 +118,7 @@
   }
 
   function start() {
+    if (busy) return;   // a reply is still loading: a second request would put the turns out of order
     messages = []; done = false; $('log').replaceChildren();
     $('start-row').hidden = true; $('answer').hidden = true;
     ask();
@@ -125,7 +128,7 @@
   $('restart').addEventListener('click', start);
   $('jump').addEventListener('click', () => { if (!messages.length && !busy) setTimeout(start, 300); });
   $('answer').addEventListener('submit', e => { e.preventDefault(); send($('text').value); });
-  $('hint').addEventListener('click', () => send("I'm stuck. Can I have a hint?"));
+  $('hint').addEventListener('click', () => send(HINT));
   $('text').addEventListener('keydown', e => {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); send($('text').value); }
   });

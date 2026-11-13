@@ -264,4 +264,4 @@ def quiz_turn(item_id: int, body: QuizIn):
     except Exception as exc:
         print(f"[quiz] {type(exc).__name__}: {exc}", flush=True)
         raise HTTPException(502, "Claude did not answer. Try again in a moment.")
-    return {"reply": text, "done": len(messages) >= 2 * quiz.QUESTIONS - 1}
+    return {"reply": text, "done": quiz.finished(messages)}
