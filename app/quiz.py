@@ -8,6 +8,7 @@ from . import config, llm, researcher
 QUESTIONS = 5
 MAX_TURNS = 2 * QUESTIONS + 6   # messages the page may send back; a little slack for follow-ups
 MAX_CHARS = 4000                # per message
+HINT = "I'm stuck. Can I have a hint?"   # what the page's Hint button sends; not counted as an answer
 
 _INTERVIEW = f"""You are the interviewer in a realistic mock interview for a college student. \
 Use the prep doc (the company, the interviewer's background, the likely questions) and the \
@@ -84,10 +85,16 @@ def reply(kind: str, prep_md: str, messages: list[dict]) -> str:
         {"type": "text", "text": "Start the session."},
     ]}
     response = llm.client().messages.create(
-        model=config.MODEL, max_tokens=2000, system=system_prompt(kind, prep_md),
+        model=config.MODEL, max_tokens=4000, system=system_prompt(kind, prep_md),
         output_config={"effort": "low"}, messages=[opener, *messages],
     )
     text = llm.text_of(response).strip()
     if response.stop_reason == "refusal" or not text:
         raise RuntimeError(f"No reply (stop_reason={response.stop_reason})")
     return text.replace(" — ", ", ").replace("—", ", ")
+
+
+def finished(messages: list[dict]) -> bool:
+    """True once the student has answered every question. Hint requests are not answers."""
+    answers = sum(1 for m in messages if m["role"] == "user" and m["content"] != HINT)
+    return answers >= QUESTIONS

@@ -1,0 +1,11 @@
+Subject: Action required: Robinhood Software Engineer Intern assessment
+
+Hello,
+
+You have been selected to move forward for the Software Engineer Intern position at Robinhood. Please complete the online assessment on HackerRank within 72 hours of receiving this email. Late submissions cannot be accepted.
+
+The test is 75 minutes and must be taken in a single sitting.
+
+Begin here: https://www.hackerrank.com/test/example-robinhood-intern/login
+
+Robinhood Early Talent

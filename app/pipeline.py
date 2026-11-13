@@ -20,7 +20,7 @@ _claimed_interviews: set[int] = set()  # interview items past the duplicate chec
 _SUFFIXES = r"\b(inc|incorporated|llc|ltd|limited|corp|corporation|co|company|plc|gmbh|technologies|labs)\b"
 _BLOCK_FIELDS = ("event_title", "event_start", "event_end", "event_link", "event_id")
 _warmups = ThreadPoolExecutor(max_workers=2, thread_name_prefix="warmup")
-_WARMUP_WAIT = 60  # seconds to wait for the warm-up plan after the slot is picked
+_WARMUP_WAIT = 20  # seconds to wait for the warm-up plan after the slot is picked
 
 
 def _why(reasoning):

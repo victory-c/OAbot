@@ -1,0 +1,12 @@
+Subject: Next step for your Datadog application: coding challenge
+
+Hi,
+
+Thanks for your interest in the Software Engineering Intern role at Datadog. As a next step we would like you to take our coding challenge on CoderPad.
+
+The challenge has two questions and takes 60 minutes once you begin. You can start it whenever you are ready using the link below.
+
+https://app.coderpad.io/take-home/example-datadog-swe-intern
+
+Good luck,
+Datadog University Recruiting
