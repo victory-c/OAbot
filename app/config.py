@@ -25,7 +25,8 @@ GOOGLE_CREDENTIALS = ROOT / "credentials.json"   # downloaded from Google Cloud 
 GOOGLE_TOKEN = ROOT / "token.json"               # written by `python -m app.google_auth`
 GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
-    "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/calendar.events",    # create / delete OAbot's blocks
+    "https://www.googleapis.com/auth/calendar.readonly",  # read busy time on every calendar (classes)
 ]
 
 # Scheduling preferences
