@@ -15,7 +15,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import bcourses, config, db, gcal, gmail_watch, pipeline
+from . import bcourses, config, db, followup, gcal, gmail_watch, pipeline, quiz
 
 STATE = {"gmail": False}
 TEMPLATES = Path(__file__).parent / "templates"
@@ -33,6 +33,7 @@ def render(name: str, **values: str) -> str:
 @asynccontextmanager
 async def lifespan(_app):
     STATE["gmail"] = gmail_watch.start()
+    followup.start()
     print(f"[OAbot] Gmail watcher: {'on' if STATE['gmail'] else 'off (paste mode)'} | "
           f"Calendar: {'mock' if gcal.using_mock() else 'Google'}", flush=True)
     yield
@@ -69,10 +70,27 @@ def ingest(email: EmailIn):
 @app.get("/api/items")
 def items():
     rows = db.list_items()
+    now = datetime.now(config.TZ)
     for r in rows:
         r["has_prep"] = bool(r.pop("prep_md"))
         r.pop("body", None)
+        r["at_risk"] = followup.at_risk(r, now)
+        # Ask on the card as soon as the block ends, without waiting for the next background check.
+        r["ask_followup"] = r.get("kind") == "oa" and followup.block_ended(r, now) and r.get("followup") in (None, "asked")
     return rows
+
+
+class FollowupIn(BaseModel):
+    answer: str
+
+
+@app.post("/api/items/{item_id}/followup")
+def answer_followup(item_id: int, body: FollowupIn):
+    """Done / Skipped / Reschedule on an OA whose block has passed."""
+    result = pipeline.answer_followup(item_id, body.answer)
+    if not result["ok"]:
+        raise HTTPException(400, result["error"])
+    return result
 
 
 # --- "This week" strip -------------------------------------------------------------------
@@ -223,4 +241,27 @@ def prep(item_id: int):
     html = re.sub(r"<h2>\s*(Sources|References)[^<]*</h2>.*", lambda m: f'<section class="sources">{m.group(0)}</section>',
                   html, count=1, flags=re.S | re.I)
     title = htmllib.escape(f"{item['company'] or 'Interview'} prep").replace("{", "&#123;")
-    return render("prep.html", title=title, content=html)
+    mode = "oa" if item["kind"] == "oa" else "interview"
+    return render("prep.html", item_id=str(int(item_id)), mode=mode, title=title, content=html)
+
+
+class QuizIn(BaseModel):
+    messages: list[dict] = []
+
+
+@app.post("/api/prep/{item_id}/quiz")
+def quiz_turn(item_id: int, body: QuizIn):
+    """One turn of "Quiz me". The page holds the transcript; nothing is stored."""
+    item = db.get_item(item_id)
+    if not item or not item["prep_md"]:
+        raise HTTPException(404, "No prep doc yet")
+    try:
+        messages = quiz.check(body.messages)
+    except quiz.BadTranscript as exc:
+        raise HTTPException(400, str(exc))
+    try:
+        text = quiz.reply("oa" if item["kind"] == "oa" else "interview", item["prep_md"], messages)
+    except Exception as exc:
+        print(f"[quiz] {type(exc).__name__}: {exc}", flush=True)
+        raise HTTPException(502, "Claude did not answer. Try again in a moment.")
+    return {"reply": text, "done": len(messages) >= 2 * quiz.QUESTIONS - 1}

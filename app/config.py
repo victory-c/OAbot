@@ -19,6 +19,8 @@ BCOURSES_ICS_URL = os.getenv("BCOURSES_ICS_URL", "").strip()
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 
 POLL_SECONDS = int(os.getenv("OABOT_POLL_SECONDS", "15"))
+# How often to check for ended OA blocks and OAs at risk of missing their deadline.
+FOLLOWUP_SECONDS = int(os.getenv("OABOT_FOLLOWUP_SECONDS", "60"))
 GMAIL_QUERY = os.getenv("OABOT_GMAIL_QUERY", "newer_than:1d -category:promotions -category:social")
 
 GOOGLE_CREDENTIALS = ROOT / "credentials.json"   # downloaded from Google Cloud console

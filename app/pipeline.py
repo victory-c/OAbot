@@ -2,10 +2,11 @@
 import re
 import threading
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from urllib.parse import urlsplit
 
-from . import classifier, config, db, gcal, notify, researcher, scheduler
+from . import classifier, config, db, gcal, notify, researcher, scheduler, warmup
 
 # One scheduling decision at a time: two emails processed together must not both read the
 # calendar before either has written its block (double booking), and a reminder must see
@@ -18,6 +19,8 @@ _claimed_interviews: set[int] = set()  # interview items past the duplicate chec
 
 _SUFFIXES = r"\b(inc|incorporated|llc|ltd|limited|corp|corporation|co|company|plc|gmbh|technologies|labs)\b"
 _BLOCK_FIELDS = ("event_title", "event_start", "event_end", "event_link", "event_id")
+_warmups = ThreadPoolExecutor(max_workers=2, thread_name_prefix="warmup")
+_WARMUP_WAIT = 60  # seconds to wait for the warm-up plan after the slot is picked
 
 
 def _why(reasoning):
@@ -286,27 +289,45 @@ def _restore_block(item):
     db.update_item(item["id"], event_id=event["id"], event_link=event["link"])
 
 
-def _schedule_oa(item_id, info, company, deadline, replaces=None):
+def _warmup_result(future) -> dict:
+    """The plan, or empty if it failed or is too slow: a missing warm-up must never cost the block."""
+    try:
+        return future.result(timeout=_WARMUP_WAIT) or {}
+    except Exception:
+        traceback.print_exc()
+        return {}
+
+
+def _schedule_oa(item_id, info, company, deadline, replaces=None, note=None):
     minutes = (info.duration_minutes or 90) + 15  # setup + buffer
-    platform = f" on {info.platform}" if info.platform else ""
+    body = (db.get_item(item_id) or {}).get("body") or ""
+    detected = warmup.detect_platform(info.platform, info.link, body)
+    # Written on a worker thread while Claude picks the slot, so it adds no wait of its own.
+    plan_future = _warmups.submit(warmup.write_plan, company, info.role, detected, info.duration_minutes, body)
+    platform = f" on {detected}" if detected else ""
     slot = scheduler.pick_slot(
         task=f"Take the {company} online assessment{platform} ({info.duration_minutes or 90} min test)",
         duration_minutes=minutes, hard_deadline=deadline,
     )
     reasoning = slot["reasoning"]
+    if note:
+        reasoning = f"{note}\n{reasoning}"
     if replaces:
         reasoning = (f"Moved from {_fmt(gcal.parse(replaces['event_start']))}: a newer email says it's due "
                      f"{_fmt(deadline)}, before that block ends\n{reasoning}")
     title = f"OA: {company}" + (f" (due {_fmt(deadline)})" if deadline else "")
+    plan = _warmup_result(plan_future)
     description = "\n\n".join(p for p in [
         f"Start here: {info.link}" if info.link else "",
-        f"Prep tip: {slot['tip']}" if slot["tip"] else "",
+        plan.get("calendar", ""),
+        f"Full warm-up plan: http://localhost:8000/prep/{item_id}" if plan.get("markdown") else "",
+        f"Prep tip: {slot['tip']}" if slot["tip"] and not plan.get("calendar") else "",
         _why(reasoning),
         "Blocked by OAbot.",
     ] if p)
     event = gcal.insert_event(title, slot["start"], slot["end"], description)
     if not _finish(item_id, event, status="scheduled", event_title=title, event_start=slot["start"].isoformat(),
-                   event_end=slot["end"].isoformat(), reasoning=reasoning,
+                   event_end=slot["end"].isoformat(), reasoning=reasoning, prep_md=plan.get("markdown"),
                    duplicate_of=replaces["id"] if replaces else None):
         if replaces:  # its old block is already gone; the old card must not claim it still exists
             db.update_item(replaces["id"], status="dismissed")
@@ -394,3 +415,55 @@ def dismiss(item_id: int) -> dict:
     if item["status"] in ("duplicate", "replaced", "dismissed"):
         return {"ok": True, "event_deleted": False}
     return {"ok": True, "event_deleted": _delete_block(item)}
+
+
+# ---------- after the block: did you take it? ----------
+
+ANSWERS = ("done", "skipped", "reschedule")
+
+
+def answer_followup(item_id: int, answer: str) -> dict:
+    """The student's answer to "Did you take it?" on an OA card.
+
+    done / skipped close the OA (no more pings). reschedule finds a new slot before the
+    deadline in the background and asks again after that block. Returns {"ok", "error"}.
+    """
+    if answer not in ANSWERS:
+        return {"ok": False, "error": "Unknown answer."}
+    with _state_lock:
+        item = db.get_item(item_id)
+        if not item or item["kind"] != "oa":
+            return {"ok": False, "error": "No such OA."}
+        if answer in ("done", "skipped"):
+            db.update_item(item_id, followup=answer)
+            return {"ok": True, "error": None}
+        if item["status"] not in ("scheduled", "error", "dismissed"):
+            return {"ok": False, "error": "This one can't be rescheduled right now."}
+        if not item["info_json"]:
+            return {"ok": False, "error": "This email was never read properly. Paste it again."}
+        info = classifier.EmailInfo.model_validate_json(item["info_json"])
+        deadline = gcal.parse(info.deadline) if info.deadline else None
+        need = timedelta(minutes=(info.duration_minutes or 90) + 15 + 30)
+        if deadline and deadline - datetime.now(config.TZ) < need:
+            return {"ok": False, "error": f"Too close to the deadline ({_fmt(deadline)}) to block a new slot. Start it now."}
+        db.update_item(item_id, status="processing", followup=None, risk_alerted=None, error=None)
+    threading.Thread(target=_reschedule, args=(item, info, deadline), daemon=True).start()
+    return {"ok": True, "error": None}
+
+
+def _reschedule(item, info, deadline):
+    item_id, company = item["id"], info.company or "Unknown company"
+    try:
+        with _schedule_lock:
+            end = gcal.parse(item["event_end"]) if item["event_end"] else None
+            if item["status"] == "scheduled" and end and end > datetime.now(config.TZ):
+                _delete_block(item)  # still ahead of us: free it so the scheduler may reuse that time
+            if item["status"] == "scheduled" and item["event_start"]:
+                note = f"Rescheduled from {_fmt(gcal.parse(item['event_start']))}, which you didn't get to"
+            else:
+                note = "Rescheduled at your request"
+            _schedule_oa(item_id, info, company, deadline, note=note)
+        _copy_result_to_duplicates(item_id)
+    except Exception as exc:
+        traceback.print_exc()
+        _finish(item_id, status="error", error=f"Could not reschedule ({exc}).", **dict.fromkeys(_BLOCK_FIELDS))

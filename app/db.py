@@ -32,6 +32,8 @@ _conn.executescript(
 _NEW_COLUMNS = {
     "event_id": "TEXT",          # calendar event id, so the block can be deleted or moved
     "duplicate_of": "INTEGER",   # for reminders: the item that already covers this
+    "followup": "TEXT",          # OAs after the block: asked | done | skipped (null: not asked yet)
+    "risk_alerted": "TEXT",      # the deadline we last sent a "due soon, not done" ping for
 }
 _have = {r["name"] for r in _conn.execute("PRAGMA table_info(items)")}
 for _col, _type in _NEW_COLUMNS.items():
