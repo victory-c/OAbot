@@ -5,6 +5,8 @@
 Judging 4:30 to 5:30 PM. Code freeze 4:15 PM. Live demo only, no slides.
 One person talks. One person drives the laptop. One person holds the phone.
 
+**Talk track per judge, and the jokes: [PITCH.md](PITCH.md).**
+
 Jump to: [60s script](#60-second-script) | [30s cut](#30-second-cut) | [judge move](#the-judge-move) |
 [checklist](#pre-demo-checklist) | [fallbacks](#if-something-breaks) | [Q&A](#questions-judges-will-ask) |
 [rubric](#how-each-rubric-line-is-earned) | [limits](#honest-limits)
@@ -282,7 +284,7 @@ The team. We built it today.
 
 **What is next?**
 1. Host it so it runs around the clock, not on a laptop.
-2. Notice when a block was missed and reschedule it.
+2. Reschedule a missed block on its own, without the one click.
 3. Send the availability reply with one tap of approval.
 
 ---
@@ -313,7 +315,7 @@ Say these out loud if asked. Offer one or two unprompted.
 - Without Google login it uses a sample class schedule. Without a bCourses link it uses sample deadlines.
 - The judges' prep docs were generated earlier today and are served from a cache. Anyone else is researched live, about 20 seconds.
 - Prep docs come from public web pages and can be wrong or out of date. It will not guess when it cannot identify someone.
-- It does not notice if you skip a block, and it does not reschedule.
+- After an OA block ends it asks "Did you take it?" (Done / Reschedule / Skipped) and pings when an OA is due within 24 hours and not done. It does not do this for interview prep blocks.
 - It tells a reminder from a new OA by the test link and the role. An unusual email can still fool it.
 - It reads the plain-text part of an email. Heavily formatted emails may come through thin.
 - Times assume Pacific time. All-day calendar events are ignored when finding free time.
