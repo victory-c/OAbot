@@ -1,7 +1,9 @@
 """Step 3: interview prep. Claude searches the web for the company and the
 interviewer, reads the student's resume, and writes the prep doc.
 
-Known docs are served instantly from samples/prep_cache/<slug>.md (see cache_slug).
+Known docs are served instantly from samples/prep_cache/<slug>.md (see cache_slug), but only
+when the active resume is the one the doc was written from (samples/prep_cache/resumes.json):
+the answer plans name resume items, so another student must get live research instead.
 Every company/person fact in a live doc carries a numbered citation, and the doc ends
 with a "## Sources" list built from the URLs the model actually cited.
 
@@ -10,6 +12,8 @@ CLI:  python -m app.researcher --company "Pear VC" --role "Venture Fellow" \
 """
 import argparse
 import base64
+import hashlib
+import json
 import os
 import re
 import sys
@@ -21,6 +25,7 @@ import anthropic
 from . import config, llm
 
 CACHE_DIR = config.ROOT / "samples" / "prep_cache"
+CACHE_RESUMES = CACHE_DIR / "resumes.json"   # {slug: fingerprint of the resume that doc was written from}
 
 SYSTEM = """You prepare a college student for a job interview. You have web search and the \
 student's resume.
@@ -136,12 +141,22 @@ def _near_match(company: str, interviewers: list[str], email_body: str):
     return None
 
 
+def _cache_resumes() -> dict:
+    try:
+        return json.loads(CACHE_RESUMES.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
 def _cached(company: str, interviewers: list[str], email_body: str = ""):
     if os.getenv("OABOT_NO_CACHE", "").strip() == "1":
         return None
     path = cache_path(company, interviewers)
     if not (path and path.is_file()):
         path = _near_match(company, interviewers, email_body)
+    if path and path.is_file() and _cache_resumes().get(path.stem) != resume_fingerprint():
+        print(f"[researcher] {path.name} was written for a different resume: researching live", flush=True)
+        return None
     if path and path.is_file():
         text = path.read_text(encoding="utf-8").strip()
         if text.startswith("# "):
@@ -149,15 +164,25 @@ def _cached(company: str, interviewers: list[str], email_body: str = ""):
     return None
 
 
+def _resume_path():
+    """The resume in use: data/resume.pdf, else data/resume.txt, else the bundled sample."""
+    for path in (config.DATA / "resume.pdf", config.DATA / "resume.txt"):
+        if path.exists():
+            return path
+    return config.ROOT / "samples" / "resume.txt"
+
+
+def resume_fingerprint() -> str:
+    """Short hash of the resume in use. Identifies it without storing anything from it."""
+    return hashlib.sha256(_resume_path().read_bytes()).hexdigest()[:16]
+
+
 def _resume_block():
-    pdf, txt = config.DATA / "resume.pdf", config.DATA / "resume.txt"
-    if pdf.exists():
-        data = base64.standard_b64encode(pdf.read_bytes()).decode()
+    path = _resume_path()
+    if path.suffix == ".pdf":
+        data = base64.standard_b64encode(path.read_bytes()).decode()
         return {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": data}}
-    if txt.exists():
-        return {"type": "text", "text": f"<resume>\n{txt.read_text()}\n</resume>"}
-    sample = config.ROOT / "samples" / "resume.txt"
-    return {"type": "text", "text": f"<resume>\n{sample.read_text()}\n</resume>"}
+    return {"type": "text", "text": f"<resume>\n{path.read_text()}\n</resume>"}
 
 
 def _get(obj, name, default=None):
@@ -314,7 +339,10 @@ def main(argv=None) -> int:
     if args.save_cache:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
         path.write_text(doc, encoding="utf-8")
-        print(f"[researcher] saved {path}", file=sys.stderr)
+        resumes = _cache_resumes()
+        resumes[path.stem] = resume_fingerprint()
+        CACHE_RESUMES.write_text(json.dumps(resumes, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        print(f"[researcher] saved {path} (for the resume in use)", file=sys.stderr)
     return 0
 
 

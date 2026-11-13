@@ -8,10 +8,11 @@ from concurrent.futures import TimeoutError as FutureTimeout
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import markdown
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -41,6 +42,34 @@ async def lifespan(_app):
 
 app = FastAPI(title="OAbot", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
+
+_UNSAFE = ("POST", "PUT", "PATCH", "DELETE")
+
+
+def cross_site(request: Request) -> bool:
+    """A state-changing request sent by some other website the student has open.
+
+    Browsers label every request with Sec-Fetch-Site and send Origin on POSTs, so a form or
+    fetch from another site (even another localhost port) is refused. Tools with neither
+    header, like curl or the tests, are let through: they are not a browser being tricked."""
+    site = request.headers.get("sec-fetch-site")
+    if site and site not in ("same-origin", "none"):
+        return True
+    origin = request.headers.get("origin")
+    if origin is None:
+        return False
+    host = request.headers.get("host", "")
+    try:
+        return origin == "null" or urlsplit(origin).netloc.lower() != host.lower()
+    except ValueError:
+        return True
+
+
+@app.middleware("http")
+async def refuse_cross_site_writes(request: Request, call_next):
+    if request.method in _UNSAFE and cross_site(request):
+        return JSONResponse({"detail": "Cross-site request refused."}, status_code=403)
+    return await call_next(request)
 
 
 class EmailIn(BaseModel):
@@ -94,6 +123,15 @@ def answer_followup(item_id: int, body: FollowupIn):
     result = pipeline.answer_followup(item_id, body.answer)
     if not result["ok"]:
         raise HTTPException(400, result["error"])
+    return result
+
+
+@app.post("/api/items/{item_id}/dismiss")
+def dismiss(item_id: int):
+    """'Not doing this': remove OAbot's calendar block, and later reminders for it stay quiet."""
+    result = pipeline.dismiss(item_id)
+    if not result["ok"]:
+        raise HTTPException(404, "No such email.")
     return result
 
 
@@ -232,6 +270,10 @@ def samples():
         if doc.exists():
             company = doc.read_text().splitlines()[0].removeprefix("# ").split(":")[0].strip() or company
         out[f"judge {name} ({company})"] = {"subject": subject.removeprefix("Subject: "), "body": body}
+    # Edge cases for the classifier and scheduler: expiring links, other timezones, digests, rejections.
+    for path in sorted((config.ROOT / "samples" / "tricky").glob("*.txt")):
+        subject, _, body = path.read_text().partition("\n\n")
+        out[f"tricky: {path.stem}"] = {"subject": subject.removeprefix("Subject: "), "body": body}
     return out
 
 

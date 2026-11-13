@@ -6,7 +6,10 @@ student's resume, and wraps up with a short scorecard after five questions."""
 from . import config, llm, researcher
 
 QUESTIONS = 5
-MAX_TURNS = 2 * QUESTIONS + 6   # messages the page may send back; a little slack for follow-ups
+MAX_HINTS = 2 * QUESTIONS       # hint requests per session; they do not use up answers
+# Messages the page may send back: each answer and each hint is a student turn plus Claude's
+# reply, with a little slack for follow-ups. Hints get their own room so they never end a session early.
+MAX_TURNS = 2 * (QUESTIONS + MAX_HINTS) + 6
 MAX_CHARS = 4000                # per message
 HINT = "I'm stuck. Can I have a hint?"   # what the page's Hint button sends; not counted as an answer
 
@@ -75,6 +78,8 @@ def check(messages: list[dict]) -> list[dict]:
         out.append({"role": role, "content": text.strip()})
     if out and out[-1]["role"] != "user":
         raise BadTranscript("Waiting for your answer.")
+    if sum(1 for m in out if m["role"] == "user" and m["content"] == HINT) > MAX_HINTS:
+        raise BadTranscript("That's all the hints for this session. Give it your best answer.")
     return out
 
 
