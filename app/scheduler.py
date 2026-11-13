@@ -20,6 +20,10 @@ room to recover if something goes wrong. Never pick the last possible slot when 
 is due. Prefer lighter days.
 - Leave 15 minutes of breathing room after a class before the slot starts.
 - Prefer times a student is sharp (late morning, afternoon, early evening) over late night.
+- Start on the hour or the half hour.
+- The earliest allowed start is given with the task: the student needs notice before a block \
+begins, so never start before it. When the deadline is under 24 hours away, being early matters \
+more than every comfort rule above: pick a slot today or as soon as possible.
 - Follow the timing preference given with the task.
 
 Output times as ISO 8601 with the student's UTC offset. In `reasons`, give 2 to 4 short bullet \
@@ -27,6 +31,32 @@ points on why this slot beats the alternatives, one fact each, naming the specif
 deadlines you worked around. Each under 12 words, key fact first, no full stop, e.g. \
 "Day before the Wednesday 2:00 PM interview" or "Clear of Sunday's CS 170 Midterm 2". \
 In `tip`, give one concrete, useful preparation tip for this specific task."""
+
+
+class NoSlot(RuntimeError):
+    """Nothing fits before the deadline: the student has to act now, not later."""
+
+
+# How much notice the student gets before a block starts. Booking a slot 30 minutes out for an
+# OA due next week only surprises them; when the deadline is close, every hour counts.
+NOTICE = timedelta(hours=2)
+URGENT_NOTICE = timedelta(minutes=15)
+URGENT_WITHIN = timedelta(hours=24)
+
+
+def earliest_start(now: datetime, hard_deadline: Optional[datetime]) -> datetime:
+    """When the first block may start: 2 hours from now, or 15 minutes if the deadline is under 24 hours away."""
+    urgent = hard_deadline is not None and hard_deadline - now < URGENT_WITHIN
+    return now + (URGENT_NOTICE if urgent else NOTICE)
+
+
+def _coursework(start: datetime, end: datetime) -> tuple[list[dict], str]:
+    """bCourses deadlines, or none plus a note if the feed is down: never block scheduling on it."""
+    try:
+        return bcourses.upcoming_deadlines(start, end), ""
+    except Exception as exc:  # never the message: it can carry the private feed URL
+        print(f"[OAbot] bCourses unavailable ({type(exc).__name__}); scheduling without coursework", flush=True)
+        return [], " (bCourses feed unavailable right now, so this list may be incomplete)"
 
 
 class Slot(BaseModel):
@@ -57,7 +87,9 @@ def _valid(start, end, window_start, window_end, busy) -> Optional[str]:
 def _first_free(duration: timedelta, window_start, window_end, busy):
     """Plain-code fallback: earliest free half-hour-aligned slot."""
     t = window_start.astimezone(config.TZ).replace(second=0, microsecond=0)
-    t += timedelta(minutes=(30 - t.minute % 30) % 30 + 30)
+    if window_start.astimezone(config.TZ) > t:
+        t += timedelta(minutes=1)  # never before window_start
+    t += timedelta(minutes=(30 - t.minute % 30) % 30)
     while t + duration <= window_end:
         if _valid(t, t + duration, window_start, window_end, busy) is None:
             return t, t + duration
@@ -70,22 +102,24 @@ EARLY = "Earlier is better: when two slots are otherwise equal, take the sooner 
 
 def pick_slot(task: str, duration_minutes: int, hard_deadline: Optional[datetime], preference: str = EARLY) -> dict:
     """Returns {start, end, reasoning, tip} with datetimes; reasoning is one short point per line.
-    Raises if no slot exists."""
+    Raises NoSlot if nothing fits before the deadline."""
     now = datetime.now(config.TZ)
-    window_start = now + timedelta(minutes=30)
+    window_start = earliest_start(now, hard_deadline)
     window_end = hard_deadline or (now + timedelta(days=5))
     if window_end <= window_start + timedelta(minutes=duration_minutes):
-        raise RuntimeError("The deadline is too close to fit this in. Do it now.")
+        raise NoSlot("The deadline is too close to fit this in. Do it now.")
     duration = timedelta(minutes=duration_minutes)
     busy = gcal.list_busy(window_start, window_end)
-    deadlines = bcourses.upcoming_deadlines(window_start, window_end)
+    deadlines, coursework_note = _coursework(window_start, window_end)
 
     context = (
         f"Now: {now.isoformat(timespec='minutes')} ({now:%A}), timezone {config.TZ.key}\n"
         f"Task: {task}\nTiming preference: {preference}\nLength needed: {duration_minutes} minutes\n"
-        f"Hard deadline: {window_end.isoformat(timespec='minutes')} ({window_end:%A})\n\n"
+        f"Earliest allowed start: {window_start.isoformat(timespec='minutes')}\n"
+        f"Hard deadline: {window_end.isoformat(timespec='minutes')} ({window_end:%A})"
+        + (" (no deadline was given; this is just the planning horizon)" if not hard_deadline else "") + "\n\n"
         f"Busy events:\n{json.dumps(busy, indent=1)}\n\n"
-        f"Coursework due (exams, assignments):\n{json.dumps(deadlines, indent=1)}"
+        f"Coursework due (exams, assignments){coursework_note}:\n{json.dumps(deadlines, indent=1)}"
     )
     messages = [{"role": "user", "content": context}]
     for _ in range(2):  # one retry if Claude's slot fails the code check
@@ -110,7 +144,7 @@ def pick_slot(task: str, duration_minutes: int, hard_deadline: Optional[datetime
         ]
     fallback = _first_free(duration, window_start, window_end, busy)
     if not fallback:
-        raise RuntimeError("No free slot before the deadline.")
+        raise NoSlot("No free slot before the deadline. Do it now.")
     return {"start": fallback[0], "end": fallback[1],
             "reasoning": "Earliest free slot before the deadline.", "tip": ""}
 
@@ -125,7 +159,7 @@ def draft_availability(company: str, role: str, duration_minutes: int, email_bod
     now = datetime.now(config.TZ)
     start, end = now + timedelta(days=1), now + timedelta(days=8)
     busy = gcal.list_busy(start, end)
-    deadlines = bcourses.upcoming_deadlines(start, end)
+    deadlines, _ = _coursework(start, end)
     response = llm.client().messages.parse(
         model=config.MODEL, max_tokens=8000,
         system=(

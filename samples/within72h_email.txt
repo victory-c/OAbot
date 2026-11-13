@@ -1,0 +1,13 @@
+Subject: Your Ramp online assessment is ready
+
+Hi there,
+
+Congratulations on moving forward with your application for Ramp's Software Engineer Intern position.
+
+Please complete the online assessment within 72 hours of receiving this email. It is hosted on HackerRank and takes 60 minutes.
+
+Assessment link: https://www.hackerrank.com/test/example-ramp-intern
+
+If you have any questions, just reply to this email.
+
+Ramp Recruiting

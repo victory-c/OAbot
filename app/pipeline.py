@@ -51,6 +51,7 @@ def submit(subject: str, sender: str, body: str, source: str = "paste") -> int:
 
 
 def _run(item_id, subject, sender, body):
+    info = None
     try:
         info = classifier.classify_email(subject, sender, body)
         db.update_item(item_id, kind=info.kind, company=info.company, role=info.role,
@@ -72,6 +73,11 @@ def _run(item_id, subject, sender, body):
         for dup in db.duplicates_of(item_id):
             db.update_item(dup["id"], status="error",
                            error=f"The earlier email this repeats failed ({exc}). Paste this one again.")
+        if isinstance(exc, scheduler.NoSlot) and info is not None:  # too late to plan: tell them to act now
+            try:
+                notify.send(_no_slot_message(info, exc), urgent=True)
+            except Exception:
+                pass
         if isinstance(exc, gcal.CalendarUnavailable):  # nothing was blocked: say so instead of failing silently
             try:
                 notify.send("Could not read Google Calendar, so nothing was blocked for a recruiting email. "
@@ -80,6 +86,30 @@ def _run(item_id, subject, sender, body):
                 pass
     finally:
         _claimed_interviews.discard(item_id)
+
+
+def _no_slot_message(info, exc) -> str:
+    company = info.company or "Unknown company"
+    if info.kind != "oa":
+        return f"{company} interview: no free time left for a prep block. {exc}"
+    lines = [f"{company} OA: no time left to block it. {exc}"]
+    if info.deadline:
+        deadline = gcal.parse(info.deadline)
+        lines.append(f"Due {_fmt(deadline)} ({notify.due_in(deadline)})")
+    if info.link:
+        lines.append(f"Start: {info.link}")
+    return "\n".join(lines)
+
+
+def _bullets(reasoning) -> str:
+    """Reasoning lines as short bullets, readable on a phone."""
+    return "\n".join(f"\u2022 {line.strip()}" for line in (reasoning or "").splitlines() if line.strip())
+
+
+def _due_line(deadline) -> str:
+    if not deadline:
+        return "No deadline given"
+    return f"Due {_fmt(deadline)}" + (f" ({notify.due_in(deadline)})" if notify.is_urgent(deadline) else "")
 
 
 # ---------- status writes that respect Dismiss ----------
@@ -262,7 +292,8 @@ def _handle_oa(item_id, info, company):
                 when = f" for {_fmt(gcal.parse(existing['event_start']))}" if existing["event_start"] else ""
                 _mark_duplicate(item_id, existing, f"Reminder for the {company} OA. Already blocked{when}, "
                                                     "which still beats the deadline. No new block.")
-                notify.send(f"Reminder from {company}: your OA is already blocked{when}.")
+                notify.send(f"Reminder from {company}: your OA is already blocked{when}.\n{_due_line(deadline)}",
+                            urgent=notify.is_urgent(deadline))
                 return
             # The reminder shows an earlier deadline than the current block allows: move it.
             # Free the old slot first so the scheduler may reuse that time.
@@ -343,11 +374,11 @@ def _schedule_oa(item_id, info, company, deadline, replaces=None, note=None):
             db.update_item(item_id, status="duplicate", **dict.fromkeys(_BLOCK_FIELDS),
                            reasoning=f"Reminder for the {company} OA you dismissed; nothing scheduled.")
             return
-        notify.send(f"{company} OA is due sooner than thought ({_fmt(deadline)}). "
-                    f"Moved the block to {_fmt(slot['start'])}.")
+        notify.send(f"{company} OA is due sooner than thought.\nMoved to {_fmt(slot['start'])}\n{_due_line(deadline)}",
+                    urgent=notify.is_urgent(deadline))
         return
-    notify.send(f"Blocked {_fmt(slot['start'])} for the {company} OA"
-                + (f" (due {_fmt(deadline)})" if deadline else "") + ". " + slot["reasoning"].replace("\n", "; "))
+    notify.send(f"\U0001F4C5 {company} OA: blocked {_fmt(slot['start'])}\n{_due_line(deadline)}\n"
+                + _bullets(slot["reasoning"]), urgent=notify.is_urgent(deadline))
 
 
 # ---------- interviews ----------

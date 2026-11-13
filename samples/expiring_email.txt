@@ -1,0 +1,11 @@
+Subject: Reminder: your Citadel assessment expires in 24 hours
+
+Hi,
+
+This is a friendly reminder that your Citadel Software Engineering Intern online assessment has not been completed yet. Your assessment link expires in 24 hours.
+
+The assessment takes 90 minutes on HackerRank and must be finished in one sitting.
+
+Complete it now: https://www.hackerrank.com/test/example-citadel-swe-intern
+
+Citadel Campus Recruiting

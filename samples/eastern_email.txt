@@ -1,0 +1,12 @@
+Subject: Jane Street - Software Engineering Internship Assessment
+
+Hello,
+
+Thanks for applying to Jane Street's Software Engineering Internship. We would like you to complete a programming assessment on Codility.
+
+The assessment takes 120 minutes. Please submit it by 9:00 AM Eastern Time on Monday, November 16.
+
+https://app.codility.com/test/example-janestreet-swe
+
+Best,
+Jane Street Recruiting

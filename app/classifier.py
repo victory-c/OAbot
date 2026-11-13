@@ -19,10 +19,23 @@ their own time before a deadline (HackerRank, CodeSignal, Codility, HireVue, Kar
 - "rejection": a rejection
 - "other": anything else (newsletters, application-received confirmations, marketing)
 
-Dates: output ISO 8601 with a UTC offset. Resolve relative dates ("within 5 days", "by Friday") \
-against the current time given in the message; if no timezone is stated, use the student's. \
-If the email gives no deadline for an OA, leave deadline null. Do not invent facts: leave a \
-field null or empty when the email does not state it."""
+Classifying tricky cases:
+- A reminder about an assessment ("your assessment expires in 24 hours", "you have not completed \
+your test yet") is still "oa": the student still has to take it.
+- A one-way / asynchronous video interview (HireVue, Spark Hire, recorded answers, no live \
+interviewer) is "oa", not an interview: set platform to the tool and duration_minutes to the time \
+the email says to set aside.
+- An email that turns the student down at any stage is "rejection", however warmly it is worded, \
+even if it mentions an assessment they already took.
+
+Dates: output ISO 8601 with a UTC offset. Resolve relative dates against the current time given \
+in the message: "within 72 hours" or "expires in 24 hours" is exactly that many hours from now; \
+"within 5 days" is 5 days from now; "by Friday" with no time means 23:59 on Friday. If the email \
+names a timezone ("ET", "Eastern", "EST", "PT", "GMT"), keep that wall-clock time and give it that \
+zone's UTC offset on that date (Eastern is -04:00 in summer, -05:00 in winter); do not shift the \
+time into the student's zone. If no timezone is stated, use the student's. If the email gives no \
+deadline for an OA ("at your earliest convenience", "when you can"), leave deadline null: never \
+guess one. Do not invent facts: leave a field null or empty when the email does not state it."""
 
 
 class EmailInfo(BaseModel):

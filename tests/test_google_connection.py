@@ -296,7 +296,7 @@ class Pipeline(unittest.TestCase):
         self.fail_slot = False
         self.busy_at_pick = []
         classifier.classify_email = lambda s, f, b: self.next_info
-        pipeline.notify.send = lambda m: None
+        pipeline.notify.send = lambda m, **k: None
 
         def pick_slot(task, duration_minutes, hard_deadline, preference=None):
             start = self.slot_start + timedelta(hours=2 * len(self.slot_calls))

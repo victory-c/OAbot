@@ -1,0 +1,12 @@
+Subject: Next steps: Datadog Software Engineering Intern coding challenge
+
+Hi,
+
+Thanks for your interest in the Software Engineering Intern role at Datadog! The next step in our process is a coding challenge on CodeSignal.
+
+The challenge has 4 questions and takes about 70 minutes. Please complete it at your earliest convenience.
+
+Start here: https://app.codesignal.com/test/example-datadog-intern
+
+Best,
+Datadog Campus Recruiting
