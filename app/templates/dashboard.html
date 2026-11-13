@@ -40,6 +40,10 @@
   .draft h4 { margin:0 0 6px; font-size:12px; font-weight:500; color:var(--muted); }
   .err { margin:0; color:var(--bad); font-size:14px; }
   .item-foot { display:flex; flex-wrap:wrap; gap:8px; }
+  .risk { margin:0; color:var(--warn); font-size:14px; font-weight:500; }
+  .ask { display:grid; gap:10px; padding:14px; background:var(--surface); border-radius:var(--r); }
+  .ask p { margin:0; font-weight:500; }
+  .ask .err:empty { display:none; }
   .empty { text-align:center; padding:48px 20px; color:var(--muted); border:1px dashed var(--line-strong); border-radius:var(--r-lg); }
   .empty strong { display:block; color:var(--ink); font-weight:500; margin-bottom:4px; }
 
@@ -96,7 +100,8 @@
     .legend { margin-left: 0; }
   }
   @media (prefers-reduced-motion: reduce) { .ev.block.new { animation:none; } }
-  .badge.duplicate, .badge.replaced, .badge.dismissed { color:var(--muted); }
+  .badge.duplicate, .badge.replaced, .badge.dismissed, .badge.skipped { color:var(--muted); }
+  .badge.done { color:var(--ok); }
   .item.quiet { opacity:.85; }
 
   @media (max-width:720px) {
@@ -154,7 +159,8 @@ const safeUrl = u => /^https?:\/\//i.test(u || '') ? u : '';
 const arrow = '<svg class="m-arrow" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3 8h10M9 4l4 4-4 4"/></svg>';
 const KIND = {oa:'Online assessment', interview_scheduled:'Interview', interview_needs_availability:'Interview, needs your times', rejection:'Rejection', other:'Not recruiting'};
 const STATUS = {scheduled:'Scheduled', prepped:'Prep ready', processing:'Working', needs_reply:'Needs reply', ignored:'Ignored', error:'Error', duplicate:'Reminder', replaced:'Moved', dismissed:'Dismissed'};
-const SETTLED = ['duplicate', 'replaced', 'dismissed'];   // rows that no longer own a calendar block
+const SETTLED = ['duplicate', 'replaced', 'dismissed'];
+const FOLLOWUP = {done:'Done', skipped:'Skipped'};   // the student's answer to "Did you take it?"   // rows that no longer own a calendar block
 const EMPTY = '<div class="empty"><strong>No recruiting emails yet</strong>New ones show up here a few seconds after they arrive.</div>';
 
 $('form').addEventListener('submit', async e => {
@@ -180,10 +186,13 @@ function card(i) {
   const status = i.status || '';
   const kind = KIND[i.kind] || '';
   const settled = SETTLED.includes(status);
-  let h = `<article class="card item${settled || status === 'ignored' ? ' quiet' : ''}"><div class="item-head"><div class="who">
+  const closed = FOLLOWUP[i.followup];
+  let h = `<article class="card item${settled || closed || status === 'ignored' ? ' quiet' : ''}"><div class="item-head"><div class="who">
       <h3 class="company">${esc(i.company || i.subject || 'New email')}</h3>
       ${kind || i.role ? `<div class="kind">${esc(kind)}${kind && i.role ? ' &middot; ' : ''}${esc(i.role || '')}</div>` : ''}
-    </div><span class="badge ${esc(status)}">${esc(STATUS[status] || status.replace(/_/g, ' '))}</span></div>`;
+    </div>${closed ? `<span class="badge ${esc(i.followup)}">${esc(closed)}</span>`
+      : `<span class="badge ${esc(status)}">${esc(STATUS[status] || status.replace(/_/g, ' '))}</span>`}</div>`;
+  if (i.at_risk) h += `<p class="risk">Due ${esc(when(i.deadline))} and ${esc(i.at_risk)}.</p>`;
   const facts = [];
   if (i.deadline) facts.push(`<div><dt>Due</dt><dd>${esc(when(i.deadline))}</dd></div>`);
   if (i.event_start && !settled) facts.push(`<div><dt>On your calendar</dt><dd>${esc(when(i.event_start))} to ${esc(time(i.event_end))}</dd></div>`);
@@ -193,12 +202,36 @@ function card(i) {
   if (status === 'processing' && !i.has_prep && (i.kind || '').startsWith('interview')) h += `<p class="note">Researching the company and interviewer&hellip;</p>`;
   if (i.draft_reply) h += `<div class="draft"><h4>Reply draft, not sent</h4><pre>${esc(i.draft_reply)}</pre></div>`;
   if (i.error) h += `<p class="err">${esc(i.error)}</p>`;
+  if (i.ask_followup) h += `<div class="ask" data-id="${esc(i.id)}"><p>Your block has ended. Did you take it?</p>
+    <div class="item-foot"><button class="btn btn--sm btn--primary" type="button" data-answer="done">Done</button>
+    <button class="btn btn--sm" type="button" data-answer="reschedule">Reschedule</button>
+    <button class="btn btn--sm" type="button" data-answer="skipped">Skipped</button></div><p class="err" role="alert"></p></div>`;
+  else if (i.kind === 'oa' && (status === 'error' || status === 'dismissed') && !closed && i.at_risk)
+    h += `<div class="ask" data-id="${esc(i.id)}"><div class="item-foot">
+    <button class="btn btn--sm btn--primary" type="button" data-answer="reschedule">Find a slot</button>
+    <button class="btn btn--sm" type="button" data-answer="done">Already done</button></div><p class="err" role="alert"></p></div>`;
   const link = safeUrl(i.event_link), foot = [];
   if (i.has_prep) foot.push(`<a class="btn btn--sm btn--primary" href="/prep/${encodeURIComponent(i.id)}">Read prep doc ${arrow}</a>`);
   if (link && !settled) foot.push(`<a class="btn btn--sm" href="${esc(link)}" target="_blank" rel="noopener">See in Calendar ${arrow}</a>`);
   if (foot.length) h += `<div class="item-foot">${foot.join('')}</div>`;
   return h + '</article>';
 }
+
+// "Did you take it?" buttons. Cards are redrawn from HTML, so listen once on the list.
+$('items').addEventListener('click', async e => {
+  const b = e.target.closest('button[data-answer]'); if (!b) return;
+  const box = b.closest('.ask'), err = box.querySelector('.err');
+  box.querySelectorAll('button').forEach(x => x.disabled = true); err.textContent = '';
+  try {
+    const r = await fetch(`/api/items/${encodeURIComponent(box.dataset.id)}/followup`, {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({answer: b.dataset.answer})});
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || 'Something went wrong.');
+    last = ''; refresh();
+  } catch (x) {
+    err.textContent = x.message;
+    box.querySelectorAll('button').forEach(x => x.disabled = false);
+  }
+});
 
 let last = '';
 async function refresh() {

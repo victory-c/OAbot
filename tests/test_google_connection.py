@@ -35,7 +35,7 @@ _old.executescript("""
 _old.commit()
 _old.close()
 
-from app import classifier, db, gcal, gmail_watch, google_auth, pipeline, researcher, scheduler  # noqa: E402
+from app import classifier, db, followup, gcal, gmail_watch, google_auth, pipeline, researcher, scheduler  # noqa: E402
 from app.classifier import EmailInfo  # noqa: E402
 
 TZ = config.TZ
@@ -568,6 +568,93 @@ class Pipeline(unittest.TestCase):
         final = db.get_item(dup["item"]["id"])
         self.assertEqual(final["prep_md"], "# prep")
         self.assertEqual(final["event_start"], original["event_start"])
+
+    # ---- after the block: "Did you take it?" and deadline-at-risk pings ----
+
+    def sent_about(self, company, now=None):
+        return [m for m in followup.check_once(now) if company in m]
+
+    def end_block(self, item_id, hours_ago=1):
+        past = datetime.now(TZ) - timedelta(hours=hours_ago)
+        db.update_item(item_id, event_start=(past - timedelta(hours=2)).isoformat(), event_end=past.isoformat())
+
+    def wait_settled(self, item_id):
+        for _ in range(100):
+            item = db.get_item(item_id)
+            if item["status"] != "processing":
+                return item
+            threading.Event().wait(0.05)
+        self.fail("reschedule never finished")
+
+    def test_block_ended_asks_once_then_done_closes_it(self):
+        due = (datetime.now(TZ) + timedelta(days=3)).isoformat()
+        item = self.email(kind="oa", company="Asana", deadline=due)
+        self.assertEqual(self.sent_about("Asana"), [])  # block still ahead: nothing to ask
+        self.end_block(item["id"])
+        msgs = self.sent_about("Asana")
+        self.assertEqual(len(msgs), 1)
+        self.assertIn("Did you take it?", msgs[0])
+        self.assertEqual(db.get_item(item["id"])["followup"], "asked")
+        self.assertEqual(self.sent_about("Asana"), [])  # asked once only
+        self.assertEqual(pipeline.answer_followup(item["id"], "done"), {"ok": True, "error": None})
+        self.assertEqual(db.get_item(item["id"])["followup"], "done")
+
+    def test_reschedule_finds_a_new_slot_and_asks_again_later(self):
+        due = (datetime.now(TZ) + timedelta(days=3)).isoformat()
+        item = self.email(kind="oa", company="Figma", deadline=due)
+        self.end_block(item["id"])
+        followup.check_once()
+        before = len(self.slot_calls)
+        self.assertTrue(pipeline.answer_followup(item["id"], "reschedule")["ok"])
+        after = self.wait_settled(item["id"])
+        self.assertEqual(after["status"], "scheduled")
+        self.assertEqual(len(self.slot_calls), before + 1)
+        self.assertTrue(after["reasoning"].startswith("Rescheduled from"))
+        self.assertIsNone(after["followup"])  # will be asked again after the new block
+        self.assertGreater(gcal.parse(after["event_end"]), datetime.now(TZ))
+
+    def test_reschedule_refused_when_deadline_too_close(self):
+        due = (datetime.now(TZ) + timedelta(minutes=50)).isoformat()
+        item_id = db.add_item("test", "r@x.com", "subj", "body")
+        info = EmailInfo(summary="s", kind="oa", company="Notion", deadline=due, duration_minutes=60)
+        db.update_item(item_id, status="error", kind="oa", company="Notion", deadline=due, info_json=info.model_dump())
+        result = pipeline.answer_followup(item_id, "reschedule")
+        self.assertFalse(result["ok"])
+        self.assertIn("Too close", result["error"])
+        self.assertEqual(db.get_item(item_id)["status"], "error")
+
+    def test_bad_answers(self):
+        self.assertFalse(pipeline.answer_followup(999999, "done")["ok"])
+        self.assertFalse(pipeline.answer_followup(1, "maybe")["ok"])
+
+    def test_deadline_at_risk_pings_once_per_deadline(self):
+        now = datetime.now(TZ)
+        item_id = db.add_item("test", "r@x.com", "subj", "body")
+        db.update_item(item_id, status="error", kind="oa", company="Datadog",
+                       deadline=(now + timedelta(hours=5)).isoformat())
+        msgs = self.sent_about("Datadog")
+        self.assertEqual(len(msgs), 1)
+        self.assertIn("nothing could be blocked", msgs[0])
+        self.assertEqual(self.sent_about("Datadog"), [])
+        db.update_item(item_id, deadline=(now + timedelta(hours=3)).isoformat())  # a newer email moved it
+        self.assertEqual(len(self.sent_about("Datadog")), 1)
+        db.update_item(item_id, followup="done")
+        db.update_item(item_id, deadline=(now + timedelta(hours=2)).isoformat())
+        self.assertEqual(self.sent_about("Datadog"), [])  # done: never nag
+
+    def test_at_risk_rules(self):
+        now = datetime.now(TZ)
+        soon, later = (now + timedelta(hours=6)).isoformat(), (now + timedelta(hours=30)).isoformat()
+        past_end = (now - timedelta(hours=1)).isoformat()
+        future_end = (now + timedelta(hours=2)).isoformat()
+        row = lambda **kw: {"kind": "oa", "status": "scheduled", "deadline": soon, "followup": None, **kw}
+        self.assertIsNone(followup.at_risk(row(event_end=future_end), now))           # block still ahead
+        self.assertIn("passed", followup.at_risk(row(event_end=past_end), now))
+        self.assertIsNone(followup.at_risk(row(event_end=past_end, deadline=later), now))  # not within 24h
+        self.assertIn("dismissed", followup.at_risk(row(status="dismissed"), now))
+        self.assertIsNone(followup.at_risk(row(status="duplicate"), now))            # the original covers it
+        self.assertIsNone(followup.at_risk(row(status="error", followup="skipped"), now))
+        self.assertIsNone(followup.at_risk(row(status="error", deadline=past_end), now))   # already past due
 
     def test_company_key(self):
         self.assertEqual(pipeline.company_key("Stripe, Inc."), pipeline.company_key("stripe"))
