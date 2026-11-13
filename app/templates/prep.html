@@ -2,11 +2,36 @@
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{title}}</title>
 <style>
-  body { font: 16px/1.6 -apple-system, system-ui, sans-serif; max-width: 720px; margin: 0 auto; padding: 24px 16px 80px; color: #1a1a1a; background: #fafaf7; }
-  h1 { font-size: 1.6rem; line-height: 1.25; }
-  h2 { font-size: 1.1rem; margin-top: 2rem; padding-bottom: 4px; border-bottom: 2px solid #d97757; }
-  a { color: #b5532f; } li { margin: 4px 0; }
-  .back { font-size: .9rem; }
-  @media (prefers-color-scheme: dark) { body { background: #191918; color: #eee; } a { color: #e8956f; } }
+  :root { color-scheme: light dark; --bg:#fafaf7; --card:#fff; --ink:#1a1a1a; --mute:#6b6b66; --line:#e6e4dc; --accent:#d97757; --link:#a84a28; --soft:#d9775714; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#191918; --card:#232321; --ink:#eeeeea; --mute:#a3a39c; --line:#3a3a36; --accent:#e08a6b; --link:#f0a388; --soft:#e08a6b1c; } }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { font: 17px/1.6 -apple-system, system-ui, "Segoe UI", sans-serif; margin: 0; color: var(--ink); background: var(--bg); overflow-wrap: anywhere; }
+  .top { position: sticky; top: 0; z-index: 1; background: var(--bg); border-bottom: 1px solid var(--line); }
+  .top a { display: block; max-width: 720px; margin: 0 auto; padding: 10px 18px; font-size: .9rem; text-decoration: none; font-weight: 600; }
+  article { max-width: 720px; margin: 0 auto; padding: 8px 18px 80px; }
+  h1 { font-size: 1.55rem; line-height: 1.25; letter-spacing: -.01em; margin: 18px 0 8px; }
+  h2 { font-size: 1.12rem; line-height: 1.3; margin: 2.1rem 0 .6rem; padding-bottom: 5px; border-bottom: 2px solid var(--accent); }
+  h3 { font-size: 1rem; margin: 1.4rem 0 .4rem; }
+  p { margin: .6rem 0; }
+  ul, ol { padding-left: 1.25rem; margin: .5rem 0; }
+  li { margin: 6px 0; } li > ul, li > ol { margin: 4px 0; }
+  a { color: var(--link); }
+  strong { font-weight: 650; }
+  blockquote { margin: .8rem 0; padding: 8px 14px; border-left: 3px solid var(--accent); background: var(--soft); border-radius: 0 8px 8px 0; }
+  blockquote p { margin: .2rem 0; }
+  code { font: .88em ui-monospace, monospace; background: var(--soft); padding: 1px 5px; border-radius: 4px; }
+  pre { overflow-x: auto; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
+  pre code { background: none; padding: 0; }
+  hr { border: 0; border-top: 1px solid var(--line); margin: 1.6rem 0; }
+  img { max-width: 100%; height: auto; }
+  .scroll { overflow-x: auto; margin: .8rem 0; }
+  table { border-collapse: collapse; font-size: .92rem; min-width: 100%; }
+  th, td { text-align: left; vertical-align: top; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+  th { font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; color: var(--mute); }
+  .sources { margin-top: 2.4rem; padding: 4px 14px 10px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; font-size: .85rem; line-height: 1.45; color: var(--mute); }
+  .sources h2 { font-size: .75rem; text-transform: uppercase; letter-spacing: .06em; color: var(--mute); border: 0; margin: 10px 0 4px; padding: 0; }
+  .sources li { margin: 4px 0; }
+  @media (max-width: 480px) { body { font-size: 16px; } article { padding: 4px 16px 64px; } h1 { font-size: 1.4rem; } }
 </style></head>
-<body><a class="back" href="/">&larr; Dashboard</a>{{content}}</body></html>
+<body><div class="top"><a href="/">&larr; Dashboard</a></div><article>{{content}}</article></body></html>
