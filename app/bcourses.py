@@ -35,13 +35,26 @@ def _entry(title: str, due: datetime, **extra) -> dict:
     return out
 
 
+# Demo coursework, pinned to weekdays so the week always looks the same: the midterm on a
+# Tuesday afternoon (between CS 161 lecture and CS 170 discussion), homework piling up on the weekend.
+_MOCK_WEEK = [  # (title, weekday Mon=0, hour, minute)
+    ("CS 161 Homework 6", 5, 17, 0),
+    ("CS 170 Homework 11", 5, 23, 59),
+    ("DATA 100 Lab 10", 6, 17, 0),
+    ("DATA 100 Homework 9", 6, 23, 59),
+    ("CS 170 Midterm 2", 1, 14, 0),
+    ("CS 161 Project 3", 3, 23, 59),
+]
+
+
 def _mock(start: datetime):
-    d = start.astimezone(config.TZ).replace(minute=0, second=0, microsecond=0)
-    return [
-        _entry("CS 170 Midterm 2", (d + timedelta(days=2)).replace(hour=19), mock=True),
-        _entry("DATA 100 Homework 9", (d + timedelta(days=3)).replace(hour=23, minute=59), mock=True),
-        _entry("CS 161 Project 3", (d + timedelta(days=6)).replace(hour=23, minute=59), mock=True),
-    ]
+    """The next occurrence of each demo item, within the 7 days from start's date."""
+    today = start.astimezone(config.TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+    out = []
+    for title, weekday, hour, minute in _MOCK_WEEK:
+        day = today + timedelta(days=(weekday - today.weekday()) % 7)
+        out.append(_entry(title, day.replace(hour=hour, minute=minute), mock=True))
+    return sorted(out, key=lambda e: e["due"])
 
 
 def _warn(msg: str):

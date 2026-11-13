@@ -147,8 +147,12 @@ class BCoursesTest(unittest.TestCase):
         self._serve(urllib.error.URLError("must not be called"))
         with mock.patch.object(config, "BCOURSES_ICS_URL", ""):
             got = bcourses.upcoming_deadlines(START, START + timedelta(days=7))
-        self.assertEqual(len(got), 3)
+        self.assertEqual(len(got), 6)
         self.assertTrue(all(d["mock"] for d in got))
+        due = {d["title"]: datetime.fromisoformat(d["due"]) for d in got}
+        self.assertLess(due["CS 170 Midterm 2"].weekday(), 5)  # an exam on a weekday, in the afternoon
+        self.assertEqual((due["CS 170 Midterm 2"].hour, due["CS 170 Midterm 2"].minute), (14, 0))
+        self.assertGreaterEqual(sum(1 for d in due.values() if d.weekday() >= 5), 4)  # weekend homework
         self.assertEqual(got, sorted(got, key=lambda d: d["due"]))
         self.assertEqual(self.calls, [])
 

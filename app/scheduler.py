@@ -48,7 +48,7 @@ Output `start` as ISO 8601 with the student's UTC offset. In `reasons`, give 2 t
 why this slot beats the alternatives, one fact each, naming the specific classes or deadlines you \
 worked around. Each under 12 words, key fact first, no bullet character, no full stop, no dashes, \
 times in 12-hour form like 5:45 PM (never 17:45), \
-e.g. "Day before the Wednesday 2:00 PM interview" or "Clear of Sunday's CS 170 Midterm 2". \
+e.g. "Day before the Wednesday 2:00 PM interview" or "Clear of Tuesday's CS 170 Midterm 2". \
 In `tip`, give one concrete, useful preparation tip for this specific task."""
 
 URGENT_NOTE = """
