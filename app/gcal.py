@@ -4,6 +4,7 @@ so everyone can build and demo without Google login.
 Check what the scheduler sees on your real calendar:  python -m app.gcal [days]
 """
 import json
+import time
 import uuid
 from datetime import datetime, timedelta
 
@@ -11,6 +12,8 @@ from . import config
 from .google_auth import load_credentials
 
 MOCK_FILE = config.DATA / "mock_calendar.json"
+CALENDAR_LIST_TTL = 300  # seconds; the set of calendars rarely changes mid-session
+_cal_cache: dict = {"at": 0.0, "ids": None}
 
 
 def _service():
@@ -54,7 +57,15 @@ def _calendar_ids(svc) -> list[tuple[str, str]]:
 
     Class schedules often live on a secondary or subscribed calendar, so reading only
     'primary' would miss them. Needs the calendar.readonly scope; without it, primary only.
+    Cached for a few minutes so each scheduling decision doesn't refetch it.
     """
+    if _cal_cache["ids"] is not None and time.monotonic() - _cal_cache["at"] < CALENDAR_LIST_TTL:
+        return _cal_cache["ids"]
+    _cal_cache["ids"], _cal_cache["at"] = _fetch_calendar_ids(svc), time.monotonic()
+    return _cal_cache["ids"]
+
+
+def _fetch_calendar_ids(svc) -> list[tuple[str, str]]:
     try:
         cals, token = [], None
         while True:
@@ -144,18 +155,19 @@ def insert_event(title: str, start: datetime, end: datetime, description: str = 
     return {"id": created.get("id", ""), "link": created.get("htmlLink", "")}
 
 
-def create_event(title: str, start: datetime, end: datetime, description: str = "") -> str:
-    """Create the block. Returns a link to it ('' in mock mode)."""
-    return insert_event(title, start, end, description)["link"]
+def delete_event(event_id: str = "", title: str = "", start: str = "") -> bool:
+    """Remove a block OAbot created. Returns True if it was there and is now gone.
 
-
-def delete_event(event_id: str) -> bool:
-    """Remove a block OAbot created. Returns True if it was there and is now gone."""
-    if not event_id:
+    Blocks made before event ids were stored have no id: pass the block's title and start
+    instead and the event is found by those.
+    """
+    if not event_id and not (title and start):
         return False
-    if event_id.startswith("mock-"):
+    if event_id.startswith("mock-") or (not event_id and using_mock()):
         events = _mock_created()
-        kept = [e for e in events if e.get("id") != event_id]
+        kept = [e for e in events if not (
+            (event_id and e.get("id") == event_id)
+            or (not event_id and e.get("title") == title and parse(e["start"]) == parse(start)))]
         MOCK_FILE.write_text(json.dumps(kept, indent=2))
         return len(kept) < len(events)
     svc = _service()
@@ -163,6 +175,10 @@ def delete_event(event_id: str) -> bool:
         return False
     from googleapiclient.errors import HttpError
 
+    if not event_id:
+        event_id = _find_event_id(svc, title, parse(start))
+        if not event_id:
+            return False
     try:
         svc.events().delete(calendarId="primary", eventId=event_id).execute()
         return True
@@ -170,6 +186,17 @@ def delete_event(event_id: str) -> bool:
         if exc.resp.status in (404, 410):  # already deleted by hand
             return False
         raise
+
+
+def _find_event_id(svc, title: str, start: datetime) -> str:
+    resp = svc.events().list(
+        calendarId="primary", timeMin=start.isoformat(), timeMax=(start + timedelta(minutes=1)).isoformat(),
+        singleEvents=True, q=title, maxResults=10,
+    ).execute()
+    for e in resp.get("items", []):
+        if e.get("summary") == title and "dateTime" in e.get("start", {}) and parse(e["start"]["dateTime"]) == start:
+            return e["id"]
+    return ""
 
 
 def parse(iso: str) -> datetime:
@@ -186,7 +213,7 @@ if __name__ == "__main__":
     if svc is None:
         print("Not logged in to Google (mock mode). Run: python -m app.google_auth")
     else:
-        print("Calendars read:", ", ".join(name for _, name in _calendar_ids(svc)))
+        print("Calendars read:", ", ".join(name for _, name in _calendar_ids(svc)))  # cached for list_busy
     print(f"Busy time for the next {days} days ({config.TZ.key}):\n")
     for e in list_busy(now, now + timedelta(days=days)):
         s, t = parse(e["start"]), parse(e["end"])

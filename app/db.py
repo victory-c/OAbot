@@ -93,3 +93,28 @@ def mark_seen(gmail_id: str):
     with _lock:
         _conn.execute("INSERT OR IGNORE INTO seen (gmail_id) VALUES (?)", (gmail_id,))
         _conn.commit()
+
+
+def duplicates_of(item_id: int) -> list[dict]:
+    """Reminder items that point at this one."""
+    with _lock:
+        rows = _conn.execute("SELECT * FROM items WHERE duplicate_of=? AND status='duplicate'", (item_id,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def reset():
+    """Forget every item and the mock calendar (before a demo). Real Google events are left alone."""
+    with _lock:
+        _conn.execute("DELETE FROM items")
+        _conn.commit()
+    (config.DATA / "mock_calendar.json").unlink(missing_ok=True)
+
+
+if __name__ == "__main__":
+    import sys
+
+    if sys.argv[1:] == ["reset"]:
+        reset()
+        print("Cleared all items and the mock calendar. Restart the server.")
+    else:
+        print("Usage: python -m app.db reset   (clears the dashboard before a demo)")

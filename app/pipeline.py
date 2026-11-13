@@ -2,17 +2,22 @@
 import re
 import threading
 import traceback
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from . import classifier, config, db, gcal, notify, researcher, scheduler
 
 # One scheduling decision at a time: two emails processed together must not both read the
 # calendar before either has written its block (double booking), and a reminder must see
-# the block its original email just created (duplicate check).
+# the block its original email just created (duplicate check). Held across Claude calls.
 _schedule_lock = threading.Lock()
+# Short lock for status changes, never held across Claude calls, so Dismiss answers at once
+# and a dismiss can't be overwritten by a pipeline thread finishing a moment later.
+_state_lock = threading.Lock()
 _claimed_interviews: set[int] = set()  # interview items past the duplicate check, still researching
 
 _SUFFIXES = r"\b(inc|incorporated|llc|ltd|limited|corp|corporation|co|company|plc|gmbh|technologies|labs)\b"
+_BLOCK_FIELDS = ("event_title", "event_start", "event_end", "event_link", "event_id")
+DISMISSED_REMINDER_DAYS = 7  # a dismissed OA with no deadline still swallows reminders this long
 
 
 def _fmt(dt):
@@ -20,11 +25,20 @@ def _fmt(dt):
     return f"{dt:%a %b} {dt.day}, {dt.hour % 12 or 12}:{dt:%M %p}"
 
 
+def _key(text: str | None) -> str:
+    s = re.sub(r"[^a-z0-9 ]", " ", (text or "").lower())
+    return re.sub(r"\s+", "", s)
+
+
 def company_key(name: str | None) -> str:
     """'Stripe, Inc.' and 'stripe' are the same company."""
-    s = re.sub(r"[^a-z0-9 ]", " ", (name or "").lower())
-    s = re.sub(_SUFFIXES, " ", s)
-    return re.sub(r"\s+", "", s)
+    return _key(re.sub(_SUFFIXES, " ", (name or "").lower()))
+
+
+def same_role(a: str | None, b: str | None) -> bool:
+    """Unknown roles match anything; 'SWE Intern (Summer 2027)' matches 'SWE Intern'."""
+    ka, kb = _key(a), _key(b)
+    return not ka or not kb or ka in kb or kb in ka
 
 
 def submit(subject: str, sender: str, body: str, source: str = "paste") -> int:
@@ -42,28 +56,91 @@ def _run(item_id, subject, sender, body):
         company = info.company or "Unknown company"
         role = info.role or "the role"
 
+        if _is_dismissed(item_id):
+            return
         if info.kind == "oa":
             _handle_oa(item_id, info, company)
         elif info.kind in ("interview_scheduled", "interview_needs_availability"):
             _handle_interview(item_id, info, company, role, body)
         else:
-            db.update_item(item_id, status="ignored")
+            _finish(item_id, status="ignored")
     except Exception as exc:
         traceback.print_exc()
-        db.update_item(item_id, status="error", error=str(exc))
+        _finish(item_id, status="error", error=str(exc))
+        for dup in db.duplicates_of(item_id):
+            db.update_item(dup["id"], status="error",
+                           error=f"The earlier email this repeats failed ({exc}). Paste this one again.")
     finally:
         _claimed_interviews.discard(item_id)
 
 
+# ---------- status writes that respect Dismiss ----------
+
+def _is_dismissed(item_id) -> bool:
+    item = db.get_item(item_id)
+    return bool(item and item["status"] == "dismissed")
+
+
+def _finish(item_id, event: dict | None = None, **fields) -> bool:
+    """Write the item's result, unless the student dismissed it meanwhile.
+
+    In that case the status and calendar fields are dropped and the event just created
+    (if any) is deleted again. Returns False if the item was dismissed.
+    """
+    if event:
+        fields.update(event_id=event["id"], event_link=event["link"])
+    with _state_lock:
+        if _is_dismissed(item_id):
+            keep = {k: v for k, v in fields.items() if k != "status" and k not in _BLOCK_FIELDS}
+            db.update_item(item_id, **keep)
+            dismissed = True
+        else:
+            db.update_item(item_id, **fields)
+            dismissed = False
+    if dismissed and event:
+        gcal.delete_event(event["id"])
+    return not dismissed
+
+
+def _delete_block(item) -> bool:
+    """Delete an item's calendar block, by id or (rows from before ids were stored) by title + start."""
+    if item["event_id"]:
+        return gcal.delete_event(item["event_id"])
+    if item["event_title"] and item["event_start"]:
+        return gcal.delete_event(title=item["event_title"], start=item["event_start"])
+    return False
+
+
+def _copy_result_to_duplicates(original_id):
+    """Reminders marked duplicate while the original was still working get its final result."""
+    original = db.get_item(original_id)
+    for dup in db.duplicates_of(original_id):
+        db.update_item(dup["id"], prep_md=original["prep_md"],
+                       **{k: original[k] for k in _BLOCK_FIELDS if k != "event_id"})
+
+
 # ---------- duplicates ----------
 
+def _still_relevant(r, now) -> bool:
+    """An old OA only swallows a new email while it is still live."""
+    if r["status"] == "scheduled":
+        return bool(r["event_end"]) and gcal.parse(r["event_end"]) > now
+    try:  # dismissed: until its deadline, or a week if it had none
+        if r["deadline"]:
+            return gcal.parse(r["deadline"]) > now
+    except ValueError:
+        pass
+    return datetime.fromisoformat(r["created"]) > now - timedelta(days=DISMISSED_REMINDER_DAYS)
+
+
 def _existing_oa(item_id, info):
-    """An earlier email about the same company's OA that is already handled, or None."""
+    """An earlier email about the same OA (company + role) that is still live, or None."""
     key = company_key(info.company)
     if not key:
         return None  # "Unknown company" must never match another unknown company
+    now = datetime.now(config.TZ)
     matches = [r for r in db.items_of_kind("oa", ("scheduled", "dismissed"), exclude_id=item_id)
-               if company_key(r["company"]) == key]
+               if company_key(r["company"]) == key and same_role(r["role"], info.role) and _still_relevant(r, now)]
     # A live block beats a dismissed one; among those, the newest.
     matches.sort(key=lambda r: (r["status"] == "scheduled", r["id"]))
     return matches[-1] if matches else None
@@ -88,9 +165,8 @@ def _existing_interview(item_id, info):
 
 
 def _mark_duplicate(item_id, original, why):
-    db.update_item(item_id, status="duplicate", duplicate_of=original["id"], reasoning=why,
-                   event_title=original["event_title"], event_start=original["event_start"],
-                   event_end=original["event_end"], event_link=original["event_link"])
+    _finish(item_id, status="duplicate", duplicate_of=original["id"], reasoning=why,
+            prep_md=original["prep_md"], **{k: original[k] for k in _BLOCK_FIELDS if k != "event_id"})
 
 
 # ---------- OA ----------
@@ -111,7 +187,23 @@ def _handle_oa(item_id, info, company):
                 notify.send(f"Reminder from {company}: your OA is already blocked{when}.")
                 return
             # The reminder shows an earlier deadline than the current block allows: move it.
-        _schedule_oa(item_id, info, company, deadline, replaces=existing)
+            # Free the old slot first so the scheduler may reuse that time.
+            _delete_block(existing)
+            try:
+                _schedule_oa(item_id, info, company, deadline, replaces=existing)
+            except Exception:
+                _restore_block(existing)
+                raise
+            return
+        _schedule_oa(item_id, info, company, deadline)
+
+
+def _restore_block(item):
+    """Put a block we deleted for a move back, because the move failed."""
+    event = gcal.insert_event(item["event_title"], gcal.parse(item["event_start"]), gcal.parse(item["event_end"]),
+                              "\n\n".join(p for p in [f"Start here: {item['link']}" if item["link"] else "",
+                                                      f"Why now: {item['reasoning']}", "Blocked by OAbot."] if p))
+    db.update_item(item["id"], event_id=event["id"], event_link=event["link"])
 
 
 def _schedule_oa(item_id, info, company, deadline, replaces=None):
@@ -124,7 +216,7 @@ def _schedule_oa(item_id, info, company, deadline, replaces=None):
     reasoning = slot["reasoning"]
     if replaces:
         reasoning = (f"Moved from {_fmt(gcal.parse(replaces['event_start']))}: a newer email says it's due "
-                     f"{_fmt(deadline)}, after that block. {reasoning}")
+                     f"{_fmt(deadline)}, before that block ended. {reasoning}")
     title = f"OA: {company}" + (f" (due {_fmt(deadline)})" if deadline else "")
     description = "\n\n".join(p for p in [
         f"Start here: {info.link}" if info.link else "",
@@ -133,13 +225,23 @@ def _schedule_oa(item_id, info, company, deadline, replaces=None):
         "Blocked by OAbot.",
     ] if p)
     event = gcal.insert_event(title, slot["start"], slot["end"], description)
-    db.update_item(item_id, status="scheduled", event_title=title, event_start=slot["start"].isoformat(),
-                   event_end=slot["end"].isoformat(), event_link=event["link"], event_id=event["id"],
-                   reasoning=reasoning, duplicate_of=replaces["id"] if replaces else None)
-    if replaces:  # only after the new block exists, so a failure never leaves the OA unblocked
-        gcal.delete_event(replaces["event_id"])
-        db.update_item(replaces["id"], status="replaced",
-                       reasoning=f"Replaced by a newer email with an earlier deadline (now {_fmt(slot['start'])}).")
+    if not _finish(item_id, event, status="scheduled", event_title=title, event_start=slot["start"].isoformat(),
+                   event_end=slot["end"].isoformat(), reasoning=reasoning,
+                   duplicate_of=replaces["id"] if replaces else None):
+        if replaces:  # its old block is already gone; the old card must not claim it still exists
+            db.update_item(replaces["id"], status="dismissed")
+        return  # dismissed while Claude was picking the slot; _finish removed the event
+    if replaces:
+        with _state_lock:
+            old_dismissed = _is_dismissed(replaces["id"])
+            if not old_dismissed:
+                db.update_item(replaces["id"], status="replaced",
+                               reasoning=f"Replaced by a newer email with an earlier deadline (now {_fmt(slot['start'])}).")
+        if old_dismissed:  # the student dismissed this OA while we were moving it
+            gcal.delete_event(event["id"])
+            db.update_item(item_id, status="duplicate", **dict.fromkeys(_BLOCK_FIELDS),
+                           reasoning=f"Reminder for the {company} OA you dismissed; nothing scheduled.")
+            return
         notify.send(f"{company} OA is due sooner than thought ({_fmt(deadline)}). "
                     f"Moved the block to {_fmt(slot['start'])}.")
         return
@@ -154,8 +256,6 @@ def _handle_interview(item_id, info, company, role, body):
         with _schedule_lock:
             existing = _existing_interview(item_id, info)
             if existing:
-                if existing["prep_md"]:
-                    db.update_item(item_id, prep_md=existing["prep_md"])
                 _mark_duplicate(item_id, existing, f"Same {company} interview as an earlier email. "
                                                     "Prep doc and prep block already handled.")
                 return
@@ -164,15 +264,16 @@ def _handle_interview(item_id, info, company, role, body):
     # 1. If they asked for availability, draft the reply (shown on the dashboard, never sent).
     if info.kind == "interview_needs_availability":
         draft = scheduler.draft_availability(company, role, info.duration_minutes or 45, body)
-        db.update_item(item_id, status="needs_reply", draft_reply=draft.reply)
-        notify.send(f"{company} wants your availability. Reply drafted, review it on the dashboard.")
+        if _finish(item_id, status="needs_reply", draft_reply=draft.reply):
+            notify.send(f"{company} wants your availability. Reply drafted, review it on the dashboard.")
 
     # 2. Research and write the prep doc.
     prep = researcher.write_prep_doc(company, role, info.interviewer_names, info.interview_start or "", body)
     db.update_item(item_id, prep_md=prep)
+    _copy_result_to_duplicates(item_id)
 
     # 3. If the interview time is fixed, block a prep session before it.
-    if info.kind == "interview_scheduled" and info.interview_start:
+    if info.kind == "interview_scheduled" and info.interview_start and not _is_dismissed(item_id):
         start = gcal.parse(info.interview_start)
         with _schedule_lock:
             slot = scheduler.pick_slot(
@@ -185,13 +286,13 @@ def _handle_interview(item_id, info, company, role, body):
             title = f"Prep: {company} interview"
             description = f"Prep doc: http://localhost:8000/prep/{item_id}\n\nWhy now: {slot['reasoning']}\n\nBlocked by OAbot."
             event = gcal.insert_event(title, slot["start"], slot["end"], description)
-        db.update_item(item_id, status="prepped", event_title=title, event_start=slot["start"].isoformat(),
-                       event_end=slot["end"].isoformat(), event_link=event["link"], event_id=event["id"],
-                       reasoning=slot["reasoning"])
-        notify.send(f"{company} interview on {_fmt(start)}: prep doc ready, prep session blocked {_fmt(slot['start'])}.")
+        if _finish(item_id, event, status="prepped", event_title=title, event_start=slot["start"].isoformat(),
+                   event_end=slot["end"].isoformat(), reasoning=slot["reasoning"]):
+            _copy_result_to_duplicates(item_id)
+            notify.send(f"{company} interview on {_fmt(start)}: prep doc ready, prep session blocked {_fmt(slot['start'])}.")
     elif info.kind == "interview_scheduled":
-        db.update_item(item_id, status="prepped")
-        notify.send(f"{company} interview: prep doc ready.")
+        if _finish(item_id, status="prepped"):
+            notify.send(f"{company} interview: prep doc ready.")
 
 
 # ---------- dismiss ----------
@@ -199,16 +300,17 @@ def _handle_interview(item_id, info, company, role, body):
 def dismiss(item_id: int) -> dict:
     """Student says 'not doing this' (or 'done'): remove OAbot's calendar block and mark it dismissed.
 
-    Later reminders for the same OA or interview are then recognised and do not re-block it.
+    Answers immediately, even while other emails are being scheduled. If the item is still
+    being processed, the pipeline sees the dismissal and deletes any block it then creates.
+    Later reminders for the same OA or interview do not re-block it.
     Returns {"ok", "event_deleted"}; ok is False if the item does not exist.
     """
-    item = db.get_item(item_id)
-    if not item:
-        return {"ok": False, "event_deleted": False}
-    deleted = False
-    with _schedule_lock:
-        # A duplicate only points at the original's block; deleting it is the original's job.
-        if item["event_id"] and item["status"] not in ("duplicate", "replaced"):
-            deleted = gcal.delete_event(item["event_id"])
+    with _state_lock:
+        item = db.get_item(item_id)
+        if not item:
+            return {"ok": False, "event_deleted": False}
         db.update_item(item_id, status="dismissed")
-    return {"ok": True, "event_deleted": deleted}
+    # A duplicate only points at the original's block; deleting it is the original's job.
+    if item["status"] in ("duplicate", "replaced", "dismissed"):
+        return {"ok": True, "event_deleted": False}
+    return {"ok": True, "event_deleted": _delete_block(item)}

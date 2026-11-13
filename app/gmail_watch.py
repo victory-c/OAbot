@@ -63,7 +63,7 @@ class _HTMLToText(HTMLParser):
             self.out.append(data)
 
     def text(self) -> str:
-        raw = html.unescape("".join(self.out)).replace("\xa0", " ")
+        raw = "".join(self.out).replace("\xa0", " ")  # entities already decoded (convert_charrefs)
         lines = [re.sub(r"[ \t\r\f\v]+", " ", line).strip() for line in raw.split("\n")]
         return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
 

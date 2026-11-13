@@ -5,12 +5,17 @@ Add each teammate's Gmail as a Test user on the OAuth consent screen.
 Run it again whenever config.GOOGLE_SCOPES changes; the server tells you when.
 """
 import json
+import os
 import threading
 
 from . import config
 
+# Without this one OAbot still works: it just reads busy time from the primary calendar only.
+OPTIONAL_SCOPES = {"https://www.googleapis.com/auth/calendar.readonly"}
+
 _lock = threading.Lock()
 _warned: set[str] = set()
+_cache: dict = {"mtime": None, "creds": None}  # token.json is read again only when it changes
 
 
 def _warn_once(key: str, message: str):
@@ -19,27 +24,47 @@ def _warn_once(key: str, message: str):
         print(f"[OAbot] {message}", flush=True)
 
 
+def _short(scopes) -> str:
+    return ", ".join(sorted(s.rsplit("/", 1)[-1] for s in scopes))
+
+
+def _read_token():
+    from google.oauth2.credentials import Credentials
+
+    try:
+        info = json.loads(config.GOOGLE_TOKEN.read_text())
+    except (OSError, ValueError):
+        _warn_once("corrupt", "token.json is unreadable. Run: python -m app.google_auth")
+        return None
+    granted = set(info.get("scopes") or [])
+    if granted:
+        missing = set(config.GOOGLE_SCOPES) - granted
+        if missing - OPTIONAL_SCOPES:
+            _warn_once("scopes", f"token.json is missing Google permissions OAbot needs ({_short(missing)}). "
+                       "Using mock mode. Run: python -m app.google_auth")
+            return None
+        if missing:
+            _warn_once("optional", f"Google login lacks {_short(missing)}: only the primary calendar is "
+                       "checked for busy time. Run python -m app.google_auth to grant it.")
+    # Load with the scopes the token really has, so a refresh never asks for more than was granted.
+    return Credentials.from_authorized_user_info(info, sorted(granted) or config.GOOGLE_SCOPES)
+
+
 def load_credentials():
     """Return valid Google credentials, or None if nobody has logged in yet (mock mode)."""
-    if not config.GOOGLE_TOKEN.exists():
+    try:
+        mtime = config.GOOGLE_TOKEN.stat().st_mtime
+    except FileNotFoundError:
         return None
     from google.auth.exceptions import RefreshError
     from google.auth.transport.requests import Request
-    from google.oauth2.credentials import Credentials
 
     with _lock:  # Gmail thread and request handlers may refresh at the same moment
-        try:
-            granted = set(json.loads(config.GOOGLE_TOKEN.read_text()).get("scopes") or [])
-        except (OSError, ValueError):
-            _warn_once("corrupt", "token.json is unreadable. Run: python -m app.google_auth")
+        if _cache["mtime"] != mtime:
+            _cache["creds"], _cache["mtime"] = _read_token(), mtime
+        creds = _cache["creds"]
+        if creds is None:
             return None
-        missing = set(config.GOOGLE_SCOPES) - granted if granted else set()
-        if missing:
-            _warn_once("scopes", "token.json is missing Google permissions OAbot now needs "
-                       f"({', '.join(sorted(s.rsplit('/', 1)[-1] for s in missing))}). "
-                       "Using mock mode. Run: python -m app.google_auth")
-            return None
-        creds = Credentials.from_authorized_user_file(str(config.GOOGLE_TOKEN), config.GOOGLE_SCOPES)
         if creds.expired and creds.refresh_token:
             try:
                 creds.refresh(Request())
@@ -48,6 +73,7 @@ def load_credentials():
                            "Using mock mode. Run: python -m app.google_auth")
                 return None
             config.GOOGLE_TOKEN.write_text(creds.to_json())
+            _cache["mtime"] = config.GOOGLE_TOKEN.stat().st_mtime
         return creds if creds.valid else None
 
 
@@ -56,10 +82,18 @@ def login():
 
     if not config.GOOGLE_CREDENTIALS.exists():
         raise SystemExit("Missing credentials.json. See README -> Google setup.")
+    # Google lets the user untick individual permissions; accept a partial grant instead of crashing.
+    os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
     flow = InstalledAppFlow.from_client_secrets_file(str(config.GOOGLE_CREDENTIALS), config.GOOGLE_SCOPES)
     # prompt=consent makes Google return a refresh token every time, so the login survives restarts.
     creds = flow.run_local_server(port=0, prompt="consent", access_type="offline")
-    config.GOOGLE_TOKEN.write_text(creds.to_json())
+    granted = getattr(creds, "granted_scopes", None)
+    if granted:  # record what Google actually granted, not what was asked for
+        info = json.loads(creds.to_json())
+        info["scopes"] = sorted(granted)
+        config.GOOGLE_TOKEN.write_text(json.dumps(info))
+    else:
+        config.GOOGLE_TOKEN.write_text(creds.to_json())
     print("Logged in. token.json written.")
     _self_check(creds)
 

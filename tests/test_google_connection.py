@@ -8,6 +8,7 @@ import json
 import sqlite3
 import sys
 import tempfile
+import threading
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -91,6 +92,9 @@ class GmailBody(unittest.TestCase):
         text = gmail_watch.html_to_text('<a href="https://x.io/a">https://x.io/a</a>')
         self.assertEqual(text, "https://x.io/a")
 
+    def test_entities_decoded_once(self):
+        self.assertEqual(gmail_watch.html_to_text("<p>use &amp;lt;token&amp;gt; &amp; go</p>"), "use &lt;token&gt; & go")
+
     def test_empty_payload(self):
         self.assertEqual(gmail_watch._body({"mimeType": "multipart/mixed", "parts": []}), "")
 
@@ -164,9 +168,16 @@ class CalendarRead(unittest.TestCase):
         )
         self._orig = gcal._service
         gcal._service = lambda: self.svc
+        gcal._cal_cache.update(at=0.0, ids=None)
 
     def tearDown(self):
         gcal._service = self._orig
+        gcal._cal_cache.update(at=0.0, ids=None)
+
+    def test_calendar_list_is_cached(self):
+        gcal.list_busy(self.start, self.end)
+        self.svc.calendars = []  # would change the result if refetched
+        self.assertEqual(len(gcal._calendar_ids(self.svc)), 3)
 
     def test_list_busy(self):
         busy = gcal.list_busy(self.start, self.end)
@@ -185,20 +196,37 @@ class CalendarRead(unittest.TestCase):
 
     def test_no_calendar_list_permission_falls_back_to_primary(self):
         self.svc.calendarList = lambda: type("X", (), {"list": lambda *a, **k: _Req(RuntimeError("403"))})()
-        self.assertEqual(gcal._calendar_ids(self.svc), [("primary", "primary")])
+        self.assertEqual(gcal._fetch_calendar_ids(self.svc), [("primary", "primary")])
 
 
 class TokenScopes(unittest.TestCase):
     def tearDown(self):
         config.GOOGLE_TOKEN.unlink(missing_ok=True)
         google_auth._warned.clear()
+        google_auth._cache.update(mtime=None, creds=None)
 
-    def test_old_token_without_new_scope_is_rejected(self):
+    def token(self, scopes):
         config.GOOGLE_TOKEN.write_text(json.dumps({
-            "token": "x", "refresh_token": "y", "client_id": "c", "client_secret": "s",
-            "scopes": config.GOOGLE_SCOPES[:2]}))
+            "token": "x", "refresh_token": "y", "client_id": "c", "client_secret": "s", "scopes": scopes,
+            "expiry": "2099-01-01T00:00:00Z"}))  # never expires, so no network refresh in tests
+
+    def test_token_without_optional_calendar_scope_still_works(self):
+        self.token(config.GOOGLE_SCOPES[:2])  # gmail.readonly + calendar.events only
+        creds = google_auth.load_credentials()
+        self.assertIsNotNone(creds)  # Gmail stays on; busy time falls back to primary
+        self.assertEqual(sorted(creds.scopes), sorted(config.GOOGLE_SCOPES[:2]))
+        self.assertIn("optional", google_auth._warned)
+
+    def test_token_without_required_scope_is_rejected(self):
+        self.token(config.GOOGLE_SCOPES[:1])  # no calendar.events: can't create blocks
         self.assertIsNone(google_auth.load_credentials())
         self.assertIn("scopes", google_auth._warned)
+
+    def test_token_read_once_until_it_changes(self):
+        self.token(config.GOOGLE_SCOPES)
+        first = google_auth.load_credentials()
+        self.assertIsNotNone(first)
+        self.assertIs(google_auth.load_credentials(), first)
 
     def test_corrupt_token(self):
         config.GOOGLE_TOKEN.write_text("{not json")
@@ -217,6 +245,9 @@ class Pipeline(unittest.TestCase):
         now = datetime.now(TZ).replace(minute=0, second=0, microsecond=0)
         self.slot_start = now + timedelta(days=1, hours=2)
         self._orig = (classifier.classify_email, scheduler.pick_slot, researcher.write_prep_doc, pipeline.notify.send)
+        self.during_slot = None  # hook: runs inside pick_slot, while "Claude is thinking"
+        self.fail_slot = False
+        self.busy_at_pick = []
         classifier.classify_email = lambda s, f, b: self.next_info
         pipeline.notify.send = lambda m: None
 
@@ -225,6 +256,11 @@ class Pipeline(unittest.TestCase):
             if hard_deadline and start + timedelta(minutes=duration_minutes) > hard_deadline:
                 start = hard_deadline - timedelta(minutes=duration_minutes + 60)
             self.slot_calls.append(hard_deadline)
+            self.busy_at_pick = [e.get("id") for e in gcal._mock_created()]
+            if self.during_slot:
+                self.during_slot()
+            if self.fail_slot:
+                raise RuntimeError("No free slot before the deadline.")
             return {"start": start, "end": start + timedelta(minutes=duration_minutes), "reasoning": "r", "tip": "t"}
 
         scheduler.pick_slot = pick_slot
@@ -233,9 +269,9 @@ class Pipeline(unittest.TestCase):
     def tearDown(self):
         classifier.classify_email, scheduler.pick_slot, researcher.write_prep_doc, pipeline.notify.send = self._orig
 
-    def email(self, **info):
+    def email(self, item_id=None, **info):
         self.next_info = EmailInfo(summary="s", **info)
-        item_id = db.add_item("test", "r@x.com", "subj", "body")
+        item_id = item_id or db.add_item("test", "r@x.com", "subj", "body")
         pipeline._run(item_id, "subj", "r@x.com", "body")  # synchronously
         return db.get_item(item_id)
 
@@ -313,6 +349,80 @@ class Pipeline(unittest.TestCase):
                             interview_start=(when + timedelta(days=1)).isoformat())
         self.assertEqual(round2["status"], "prepped")
         self.assertEqual(len(self.mock_events()), 2)
+
+    def test_past_block_does_not_swallow_a_new_oa(self):
+        old = db.add_item("test", "r@x.com", "old", "old")
+        past = datetime.now(TZ) - timedelta(days=30)
+        db.update_item(old, kind="oa", company="Pastco", status="scheduled", event_id="mock-old",
+                       event_start=past.isoformat(), event_end=(past + timedelta(hours=2)).isoformat())
+        self.assertEqual(self.email(kind="oa", company="Pastco")["status"], "scheduled")
+
+    def test_different_role_same_company_is_not_duplicate(self):
+        a = self.email(kind="oa", company="Rolex", role="Software Engineer Intern (Summer 2027)")
+        same = self.email(kind="oa", company="Rolex", role="Software Engineer Intern")
+        other = self.email(kind="oa", company="Rolex", role="Data Science Intern")
+        self.assertEqual((a["status"], same["status"], other["status"]), ("scheduled", "duplicate", "scheduled"))
+
+    def test_move_frees_the_old_slot_before_picking(self):
+        first = self.email(kind="oa", company="Movers", duration_minutes=60)
+        soon = (gcal.parse(first["event_end"]) - timedelta(minutes=30)).isoformat()
+        moved = self.email(kind="oa", company="Movers", deadline=soon, duration_minutes=60)
+        self.assertEqual(moved["status"], "scheduled")
+        self.assertNotIn(first["event_id"], self.busy_at_pick)
+
+    def test_failed_move_restores_the_old_block(self):
+        first = self.email(kind="oa", company="Fragile", duration_minutes=60)
+        self.fail_slot = True
+        soon = (gcal.parse(first["event_end"]) - timedelta(minutes=30)).isoformat()
+        moved = self.email(kind="oa", company="Fragile", deadline=soon, duration_minutes=60)
+        self.assertEqual(moved["status"], "error")
+        old = db.get_item(first["id"])
+        self.assertEqual(old["status"], "scheduled")
+        events = self.mock_events()
+        self.assertEqual([e["id"] for e in events], [old["event_id"]])  # restored, new id stored
+        self.assertEqual(events[0]["start"], first["event_start"])
+
+    def test_legacy_block_without_event_id_is_deleted(self):
+        start = datetime.now(TZ).replace(microsecond=0) + timedelta(days=2)
+        gcal.MOCK_FILE.write_text(json.dumps([{"title": "OA: Legacy", "start": start.isoformat(),
+                                               "end": (start + timedelta(hours=1)).isoformat()}]))
+        old = db.add_item("test", "r@x.com", "old", "old")
+        db.update_item(old, kind="oa", company="Legacy", status="scheduled", event_title="OA: Legacy",
+                       event_start=start.isoformat(), event_end=(start + timedelta(hours=1)).isoformat())
+        self.assertEqual(pipeline.dismiss(old), {"ok": True, "event_deleted": True})
+        self.assertEqual(self.mock_events(), [])
+
+    def test_dismiss_while_processing_sticks_and_removes_the_new_block(self):
+        item_id = db.add_item("test", "r@x.com", "subj", "body")
+        self.during_slot = lambda: pipeline.dismiss(item_id)
+        item = self.email(item_id=item_id, kind="oa", company="Racer")
+        self.assertEqual(item["status"], "dismissed")
+        self.assertIsNone(item["event_id"])
+        self.assertEqual(self.mock_events(), [])
+
+    def test_dismiss_does_not_wait_for_scheduling(self):
+        first = self.email(kind="oa", company="Waiter")
+        done = threading.Event()
+        with pipeline._schedule_lock:  # as if Claude were mid-way through picking another slot
+            threading.Thread(target=lambda: (pipeline.dismiss(first["id"]), done.set()), daemon=True).start()
+            self.assertTrue(done.wait(2), "dismiss blocked on the scheduling lock")
+
+    def test_interview_duplicate_gets_the_originals_result(self):
+        when = (datetime.now(TZ) + timedelta(days=4)).replace(hour=15, minute=0, second=0, microsecond=0)
+        dup = {}
+
+        def research(*a):
+            if not dup:  # the reminder lands while the original is still researching
+                dup["item"] = self.email(kind="interview_scheduled", company="Echo", interview_start=when.isoformat())
+            return "# prep"
+
+        researcher.write_prep_doc = research
+        original = self.email(kind="interview_scheduled", company="Echo", interview_start=when.isoformat())
+        self.assertEqual(dup["item"]["status"], "duplicate")
+        self.assertIsNone(dup["item"]["prep_md"])  # nothing to copy yet at that moment
+        final = db.get_item(dup["item"]["id"])
+        self.assertEqual(final["prep_md"], "# prep")
+        self.assertEqual(final["event_start"], original["event_start"])
 
     def test_company_key(self):
         self.assertEqual(pipeline.company_key("Stripe, Inc."), pipeline.company_key("stripe"))
