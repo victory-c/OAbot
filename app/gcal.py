@@ -1,12 +1,19 @@
 """Calendar access. Real Google Calendar if logged in, otherwise a local mock
-so everyone can build and demo without Google login."""
+so everyone can build and demo without Google login.
+
+Check what the scheduler sees on your real calendar:  python -m app.gcal [days]
+"""
 import json
+import time
+import uuid
 from datetime import datetime, timedelta
 
 from . import config
 from .google_auth import load_credentials
 
 MOCK_FILE = config.DATA / "mock_calendar.json"
+CALENDAR_LIST_TTL = 300  # seconds; the set of calendars rarely changes mid-session
+_cal_cache: dict = {"at": 0.0, "ids": None}
 
 
 def _service():
@@ -45,33 +52,139 @@ def _mock_classes(start: datetime, end: datetime):
     return out
 
 
+class CalendarUnavailable(RuntimeError):
+    """Busy time could not be read reliably, so nothing may be scheduled against it."""
+
+
+_RETRIES = 2                 # googleapiclient retries 5xx and rate limits with backoff
+_NOTHING_SCHEDULED = "Nothing was scheduled, so no block can land on top of an event OAbot could not see."
+
+
+def _http_status(exc) -> int | None:
+    """HTTP status of a googleapiclient HttpError, or None for anything else (network errors)."""
+    status = getattr(getattr(exc, "resp", None), "status", None)
+    try:
+        return int(status)
+    except (TypeError, ValueError):
+        return None
+
+
+def _rate_limited(exc) -> bool:
+    """Google reports quota and rate limits as 403 too; those are temporary, not a missing permission."""
+    # Look at Google's own reason text, not str(exc), which embeds the request URL and calendar id.
+    text = str(getattr(exc, "reason", None) or getattr(exc, "error_details", None) or exc).lower()
+    return "limit" in text or "quota" in text
+
+
+def _no_access(exc) -> bool:
+    """403 because the permission or share really is missing."""
+    return _http_status(exc) == 403 and not _rate_limited(exc)
+
+
+def _gone(exc) -> bool:
+    """A subscribed calendar that was deleted (404/410) or unshared (403): safe to skip for good."""
+    return _http_status(exc) in (404, 410) or _no_access(exc)
+
+
+def _calendar_ids(svc) -> list[tuple[str, str]]:
+    """(id, name) of every calendar shown in the user's Google Calendar, primary first.
+
+    Class schedules often live on a secondary or subscribed calendar, so reading only
+    'primary' would miss them. Needs the calendar.readonly scope; without it, primary only.
+    Cached for a few minutes so each scheduling decision doesn't refetch it.
+    """
+    if _cal_cache["ids"] is not None and time.monotonic() - _cal_cache["at"] < CALENDAR_LIST_TTL:
+        return _cal_cache["ids"]
+    _cal_cache["ids"], _cal_cache["at"] = _fetch_calendar_ids(svc), time.monotonic()
+    return _cal_cache["ids"]
+
+
+def _fetch_calendar_ids(svc) -> list[tuple[str, str]]:
+    try:
+        cals, token = [], None
+        while True:
+            resp = svc.calendarList().list(pageToken=token, minAccessRole="reader").execute(num_retries=_RETRIES)
+            cals += resp.get("items", [])
+            token = resp.get("nextPageToken")
+            if not token:
+                break
+    except Exception as exc:
+        if not _no_access(exc):  # an outage, not a missing permission: other calendars may hold classes
+            raise CalendarUnavailable(f"Could not list your Google calendars ({exc}). {_NOTHING_SCHEDULED}") from exc
+        print(f"[OAbot] No permission to list calendars, using primary only: {exc}", flush=True)
+        return [("primary", "primary")]
+    picked = [c for c in cals if c.get("primary") or (c.get("selected") and not c.get("hidden"))]
+    picked.sort(key=lambda c: not c.get("primary"))
+    return [("primary" if c.get("primary") else c["id"], c.get("summaryOverride") or c.get("summary", c["id"]))
+            for c in picked] or [("primary", "primary")]
+
+
+def _is_busy(e: dict) -> bool:
+    """Timed, confirmed, not marked 'free', and not declined by the user."""
+    if e.get("status") == "cancelled" or "dateTime" not in e.get("start", {}):
+        return False  # cancelled, or an all-day event (holidays, "exam week" banners)
+    if e.get("transparency") == "transparent":
+        return False  # the user marked it "Free"
+    me = next((a for a in e.get("attendees", []) if a.get("self")), None)
+    return not (me and me.get("responseStatus") == "declined")
+
+
+def _google_events(svc, start: datetime, end: datetime) -> list[dict]:
+    events = []
+    for cal_id, cal_name in _calendar_ids(svc):
+        token = None
+        try:
+            while True:
+                resp = svc.events().list(
+                    calendarId=cal_id, timeMin=start.isoformat(), timeMax=end.isoformat(),
+                    singleEvents=True,  # expands recurring events (weekly lectures) into each occurrence
+                    orderBy="startTime", maxResults=250, pageToken=token, timeZone=config.TZ.key,
+                ).execute(num_retries=_RETRIES)
+                for e in resp.get("items", []):
+                    if _is_busy(e):
+                        item = {"title": e.get("summary", "(busy)"), "start": e["start"]["dateTime"],
+                                "end": e["end"]["dateTime"]}
+                        if cal_id != "primary":
+                            item["calendar"] = cal_name
+                        events.append(item)
+                token = resp.get("nextPageToken")
+                if not token:
+                    break
+        except Exception as exc:
+            # Only a calendar that is permanently unreadable (deleted or access removed) may be
+            # skipped, and never the primary one. Anything else is an outage: returning a partial
+            # list would let the scheduler book over events it could not see.
+            if cal_id == "primary" or not _gone(exc):
+                raise CalendarUnavailable(
+                    f"Could not read your Google Calendar {cal_name!r} ({exc}). {_NOTHING_SCHEDULED}") from exc
+            print(f"[OAbot] Skipping unreadable calendar {cal_name!r}: {exc}", flush=True)
+    return events
+
+
 def list_busy(start: datetime, end: datetime) -> list[dict]:
-    """Timed events between start and end as [{title, start, end}] (ISO strings)."""
+    """Timed events between start and end as [{title, start, end}] (ISO strings), local time."""
     svc = _service()
     if svc is None:
-        events = _mock_classes(start, end) + _mock_created()
+        events = _mock_classes(start, end) + [
+            {k: e[k] for k in ("title", "start", "end")} for e in _mock_created()]
     else:
-        resp = svc.events().list(
-            calendarId="primary", timeMin=start.isoformat(), timeMax=end.isoformat(),
-            singleEvents=True, orderBy="startTime", maxResults=250,
-        ).execute()
-        events = [
-            {"title": e.get("summary", "(busy)"), "start": e["start"]["dateTime"], "end": e["end"]["dateTime"]}
-            for e in resp.get("items", [])
-            if "dateTime" in e.get("start", {})  # skip all-day events
-        ]
+        events = _google_events(svc, start, end)
     keep = [e for e in events if parse(e["end"]) > start and parse(e["start"]) < end]
+    for e in keep:  # one timezone for everything the scheduler reads
+        e["start"] = parse(e["start"]).astimezone(config.TZ).isoformat()
+        e["end"] = parse(e["end"]).astimezone(config.TZ).isoformat()
     return sorted(keep, key=lambda e: parse(e["start"]))
 
 
-def create_event(title: str, start: datetime, end: datetime, description: str = "") -> str:
-    """Create the block. Returns a link to it ('' in mock mode)."""
+def insert_event(title: str, start: datetime, end: datetime, description: str = "") -> dict:
+    """Create the block. Returns {id, link} (link is '' in mock mode)."""
     svc = _service()
     if svc is None:
         events = _mock_created()
-        events.append({"title": title, "start": start.isoformat(), "end": end.isoformat()})
+        event_id = f"mock-{uuid.uuid4().hex[:12]}"
+        events.append({"id": event_id, "title": title, "start": start.isoformat(), "end": end.isoformat()})
         MOCK_FILE.write_text(json.dumps(events, indent=2))
-        return ""
+        return {"id": event_id, "link": ""}
     body = {
         "summary": title,
         "description": description,
@@ -80,9 +193,71 @@ def create_event(title: str, start: datetime, end: datetime, description: str = 
         "reminders": {"useDefault": False, "overrides": [{"method": "popup", "minutes": 30}]},
         "colorId": "11",
     }
-    return svc.events().insert(calendarId="primary", body=body).execute().get("htmlLink", "")
+    created = svc.events().insert(calendarId="primary", body=body).execute()
+    return {"id": created.get("id", ""), "link": created.get("htmlLink", "")}
+
+
+def delete_event(event_id: str = "", title: str = "", start: str = "") -> bool:
+    """Remove a block OAbot created. Returns True if it was there and is now gone.
+
+    Blocks made before event ids were stored have no id: pass the block's title and start
+    instead and the event is found by those.
+    """
+    if not event_id and not (title and start):
+        return False
+    if event_id.startswith("mock-") or (not event_id and using_mock()):
+        events = _mock_created()
+        kept = [e for e in events if not (
+            (event_id and e.get("id") == event_id)
+            or (not event_id and e.get("title") == title and parse(e["start"]) == parse(start)))]
+        MOCK_FILE.write_text(json.dumps(kept, indent=2))
+        return len(kept) < len(events)
+    svc = _service()
+    if svc is None:
+        return False
+    from googleapiclient.errors import HttpError
+
+    if not event_id:
+        event_id = _find_event_id(svc, title, parse(start))
+        if not event_id:
+            return False
+    try:
+        svc.events().delete(calendarId="primary", eventId=event_id).execute()
+        return True
+    except HttpError as exc:
+        if exc.resp.status in (404, 410):  # already deleted by hand
+            return False
+        raise
+
+
+def _find_event_id(svc, title: str, start: datetime) -> str:
+    resp = svc.events().list(
+        calendarId="primary", timeMin=start.isoformat(), timeMax=(start + timedelta(minutes=1)).isoformat(),
+        singleEvents=True, q=title, maxResults=10,
+    ).execute()
+    for e in resp.get("items", []):
+        if e.get("summary") == title and "dateTime" in e.get("start", {}) and parse(e["start"]["dateTime"]) == start:
+            return e["id"]
+    return ""
 
 
 def parse(iso: str) -> datetime:
     dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
     return dt if dt.tzinfo else dt.replace(tzinfo=config.TZ)
+
+
+if __name__ == "__main__":
+    import sys
+
+    days = int(sys.argv[1]) if len(sys.argv) > 1 else 7
+    now = datetime.now(config.TZ)
+    svc = _service()
+    if svc is None:
+        print("Not logged in to Google (mock mode). Run: python -m app.google_auth")
+    else:
+        print("Calendars read:", ", ".join(name for _, name in _calendar_ids(svc)))  # cached for list_busy
+    print(f"Busy time for the next {days} days ({config.TZ.key}):\n")
+    for e in list_busy(now, now + timedelta(days=days)):
+        s, t = parse(e["start"]), parse(e["end"])
+        where = f"  [{e['calendar']}]" if e.get("calendar") else ""
+        print(f"  {s:%a %b %d  %H:%M}-{t:%H:%M}  {e['title']}{where}")
