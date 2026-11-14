@@ -82,6 +82,7 @@
   .ev { position: absolute; overflow: hidden; border-radius: 4px; padding: 1px 4px; font-size: .68rem; line-height: 1.2;
         background: var(--busy); color: var(--busy-ink); border-left: 3px solid var(--busy-edge); }
   .ev b { font-weight: 600; display: block; }
+  .ev.interview { background: color-mix(in oklab, var(--info) 22%, var(--surface)); color: var(--ink); border-left: 3px solid var(--info); }
   .ev span { display: block; opacity: .8; white-space: nowrap; }
   a.ev { text-decoration: none; }
   .ev.block { background: var(--accent-fill); color: #fff; border-left-color: #fff8; z-index: 2; font-size: .72rem;
@@ -382,7 +383,7 @@ function renderWeek(c) {
         h += id ? `<a class="ev block${e.isNew ? ' new' : ''}" href="#item-${id}" style="${box}" title="${tip}"><b>${esc(name)}</b><span>${esc(range)}</span></a>`
                 : `<div class="ev block" style="${box}" title="${tip}"><b>${esc(name)}</b><span>${esc(range)}</span></div>`;
       } else {
-        h += `<div class="ev" style="${box}" title="${esc(e.title)}, ${esc(range)}"><b>${esc(e.title)}</b><span>${esc(range)}</span></div>`;
+        h += `<div class="ev${e.interview ? ' interview' : ''}" style="${box}" title="${esc(e.title)}, ${esc(range)}"><b>${esc(e.title)}</b><span>${esc(range)}</span></div>`;
       }
     }
     h += '</div>';

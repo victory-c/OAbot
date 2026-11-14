@@ -244,7 +244,7 @@ def calendar():
             start = gcal.parse(info["interview_start"])
         except (KeyError, TypeError, ValueError, AttributeError):
             continue
-        stop = start + timedelta(minutes=info.get("duration_minutes") or 45)
+        stop = start + timedelta(minutes=max(info.get("duration_minutes") or 60, 60))  # tall enough to read
         interviews.append({"title": f"Interview: {r.get('company') or 'Unknown company'}", "company": r.get("company") or "",
                            "start": start.isoformat(), "end": stop.isoformat()})
 
@@ -262,7 +262,7 @@ def calendar():
             continue  # the invite is already on the calendar
         spot = _place(iv["start"], iv["end"], day0)
         if spot:
-            events.append({**iv, "day": spot[0], "start_min": spot[1], "end_min": spot[2], "oabot": False})
+            events.append({**iv, "day": spot[0], "start_min": spot[1], "end_min": spot[2], "oabot": False, "interview": True})
     for e in busy:
         title = str(e.get("title") or "(busy)")
         # OAbot's blocks also live on the calendar itself: show each once, as a block.
