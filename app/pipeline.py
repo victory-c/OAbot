@@ -460,13 +460,29 @@ def _handle_interview(item_id, info, company, role, body):
             notify.send(f"{company} interview: prep doc ready.")
 
 
+INTERVIEW_PREP_MINUTES = 60
+
+
+def _right_before(start):
+    """The prep hour ending as the interview starts, if it is free and still ahead; else None."""
+    begin = start - timedelta(minutes=INTERVIEW_PREP_MINUTES)
+    if begin < datetime.now(config.TZ) + timedelta(minutes=10):
+        return None
+    if gcal.list_busy(begin, start):
+        return None
+    return {"start": begin, "end": start, "tip": "",
+            "reasoning": f"Right before the {_fmt(start)} interview, so it is fresh when you walk in"}
+
+
 def _schedule_prep(item_id, company, role, start, note=None):
-    """Block the prep session before an interview starting at `start`. Call with _schedule_lock held.
+    """Block the prep session before an interview starting at `start`: the hour right before it when
+    that hour is free, otherwise the best earlier slot. Call with _schedule_lock held.
     Returns the slot, or None if the student dismissed the item meanwhile (the event is then removed)."""
-    slot = scheduler.pick_slot(
+    slot = _right_before(start) or scheduler.pick_slot(
         task=(f"Interview prep for {company} ({role}): read the prep doc, rehearse stories out loud. "
-              f"The interview itself starts {_fmt(start)}; the hard deadline below is 2 hours before it"),
-        duration_minutes=60, hard_deadline=start - timedelta(hours=2),
+              f"The interview itself starts {_fmt(start)}; the hard deadline below is when it starts. "
+              "The hour right before it is taken"),
+        duration_minutes=INTERVIEW_PREP_MINUTES, hard_deadline=start,
         preference=("As close to the interview as is sensible, so it stays fresh: ideally the afternoon or "
                     "evening of the day before, otherwise the morning of the interview."),
     )

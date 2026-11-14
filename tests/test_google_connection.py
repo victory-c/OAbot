@@ -726,6 +726,20 @@ class Pipeline(unittest.TestCase):
         self.assertIn(old_id, self.busy_at_pick)  # the old block was still there (busy) while picking
         self.assertEqual(after["prep_md"], "# Retool: OA warm-up\n")
 
+    def test_interview_prep_sits_right_before_the_interview(self):
+        start = (datetime.now(TZ) + timedelta(days=3)).replace(hour=20, minute=0, second=0, microsecond=0)
+        item = self.email(kind="interview_scheduled", company="Loom", interview_start=start.isoformat())
+        self.assertEqual(gcal.parse(item["event_end"]), start)
+        self.assertEqual(gcal.parse(item["event_start"]), start - timedelta(hours=1))
+        self.assertTrue(item["reasoning"].startswith("Right before"))
+
+    def test_interview_prep_goes_earlier_when_the_hour_before_is_busy(self):
+        start = (datetime.now(TZ) + timedelta(days=3)).replace(hour=20, minute=0, second=0, microsecond=0)
+        gcal.insert_event("Club meeting", start - timedelta(minutes=30), start)
+        item = self.email(kind="interview_scheduled", company="Coda", interview_start=start.isoformat())
+        self.assertLessEqual(gcal.parse(item["event_end"]), start - timedelta(minutes=30))
+        self.assertEqual(self.slot_calls[-1], start)  # the scheduler may use any time up to the interview
+
     def test_move_interview_prep_block(self):
         start = (datetime.now(TZ) + timedelta(days=3)).replace(hour=14, minute=0).isoformat()
         item = self.email(kind="interview_scheduled", company="Vercel", interview_start=start)
@@ -764,7 +778,7 @@ class Pipeline(unittest.TestCase):
         def no_slot(task, duration_minutes, hard_deadline, preference=None):
             raise scheduler.NoSlot("This was due 2:59 PM, which has already passed. Ask the recruiter...")
         scheduler.pick_slot = no_slot
-        start = (datetime.now(TZ) + timedelta(hours=1, minutes=30)).isoformat()
+        start = (datetime.now(TZ) + timedelta(minutes=50)).isoformat()  # too late for the hour right before
         item = self.email(kind="interview_scheduled", company="Figma", interview_start=start)
         self.assertEqual(item["status"], "prepped")
         self.assertEqual(item["prep_md"], "# prep")

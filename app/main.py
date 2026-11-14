@@ -1,5 +1,6 @@
 """Run:  uvicorn app.main:app --reload --port 8000"""
 import html as htmllib
+import json
 import re
 import threading
 import time
@@ -232,6 +233,21 @@ def calendar():
                            "kind": r.get("kind") or "", "start": r["event_start"], "end": r["event_end"],
                            "day": spot[0], "start_min": spot[1], "end_min": spot[2]})
 
+    # Interviews: the calendar invite may not be on the calendar (mock mode, or not accepted yet).
+    # Draw each upcoming one so its prep block reads as "right before the interview".
+    interviews = []
+    for r in rows:
+        if r.get("kind") != "interview_scheduled" or r.get("status") in ("duplicate", "replaced", "dismissed"):
+            continue
+        try:
+            info = json.loads(r.get("info_json") or "{}")
+            start = gcal.parse(info["interview_start"])
+        except (KeyError, TypeError, ValueError, AttributeError):
+            continue
+        stop = start + timedelta(minutes=info.get("duration_minutes") or 45)
+        interviews.append({"title": f"Interview: {r.get('company') or 'Unknown company'}", "company": r.get("company") or "",
+                           "start": start.isoformat(), "end": stop.isoformat()})
+
     def same_instant(a, b):
         try:
             return gcal.parse(a) == gcal.parse(b)
@@ -239,6 +255,14 @@ def calendar():
             return False
 
     events = []
+    for iv in interviews:
+        name = iv.pop("company").lower()
+        if name and any(same_instant(e.get("start"), iv["start"]) and name in str(e.get("title") or "").lower()
+                        for e in busy):
+            continue  # the invite is already on the calendar
+        spot = _place(iv["start"], iv["end"], day0)
+        if spot:
+            events.append({**iv, "day": spot[0], "start_min": spot[1], "end_min": spot[2], "oabot": False})
     for e in busy:
         title = str(e.get("title") or "(busy)")
         # OAbot's blocks also live on the calendar itself: show each once, as a block.
