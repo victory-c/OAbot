@@ -38,7 +38,7 @@ def _entry(title: str, due: datetime, **extra) -> dict:
 # Demo coursework, pinned to weekdays so the week always looks the same: the midterm on a
 # Tuesday afternoon (between CS 161 lecture and CS 170 discussion), homework piling up on the weekend.
 _MOCK_WEEK = [  # (title, weekday Mon=0, hour, minute)
-    ("CS 161 Homework 6", 5, 17, 0),
+    ("CS 161 Homework 6", 5, 19, 0),
     ("CS 170 Homework 11", 5, 23, 59),
     ("DATA 100 Lab 10", 6, 17, 0),
     ("DATA 100 Homework 9", 6, 23, 59),
