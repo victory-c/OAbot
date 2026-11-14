@@ -183,6 +183,13 @@ class CalendarRead(unittest.TestCase):
         gcal._service = self._orig
         gcal._cal_cache.update(at=0.0, ids=None)
 
+    def test_mock_week_has_the_citadel_interview_with_prep_right_before(self):
+        sat = datetime(2026, 11, 14, tzinfo=TZ)  # a Saturday
+        week = {e["title"]: e for e in gcal._mock_classes(sat, sat + timedelta(days=1))}
+        prep, iv = week["Prep: Citadel interview"], week["Interview: Citadel"]
+        self.assertEqual((gcal.parse(prep["start"]).hour, gcal.parse(prep["end"]).hour), (13, 16))
+        self.assertEqual((gcal.parse(iv["start"]).hour, gcal.parse(iv["end"]).hour), (16, 17))
+
     def test_calendar_list_is_cached(self):
         gcal.list_busy(self.start, self.end)
         self.svc.calendars = []  # would change the result if refetched

@@ -272,7 +272,7 @@ def calendar():
         if spot:
             events.append({"title": title, "start": e["start"], "end": e["end"],
                            "day": spot[0], "start_min": spot[1], "end_min": spot[2],
-                           "oabot": title.startswith(("OA: ", "Prep: "))})
+                           "oabot": title.startswith(("OA: ", "Prep: ")), "interview": title.startswith("Interview: ")})
 
     deadlines = []
     for d in due:

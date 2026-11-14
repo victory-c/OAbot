@@ -34,13 +34,15 @@ def _mock_created():
 
 
 def _mock_classes(start: datetime, end: datetime):
-    """A plausible Berkeley week: lectures, a discussion, a club meeting, a Friday hackathon."""
+    """A plausible Berkeley week: lectures, a discussion, a club meeting, a Friday hackathon,
+    and a Saturday Citadel interview with three hours of prep right before it."""
     weekly = {
         0: [("CS 170 Lecture", 10, 0, 11, 0), ("DATA 100 Lecture", 14, 0, 15, 30)],
         1: [("CS 161 Lecture", 11, 0, 12, 30), ("CS 170 Discussion", 16, 0, 17, 0)],
         2: [("CS 170 Lecture", 10, 0, 11, 0), ("DATA 100 Lecture", 14, 0, 15, 30), ("Club meeting", 19, 0, 20, 0)],
         3: [("CS 161 Lecture", 11, 0, 12, 30), ("DATA 100 Lab", 15, 0, 17, 0)],
         4: [("CS 170 Lecture", 10, 0, 11, 0), ("Claude Hackathon", 11, 0, 18, 0)],
+        5: [("Prep: Citadel interview", 13, 0, 16, 0), ("Interview: Citadel", 16, 0, 17, 0)],
     }
     out = []
     day = start.astimezone(config.TZ).replace(hour=0, minute=0, second=0, microsecond=0)
