@@ -18,7 +18,9 @@ _state_lock = threading.Lock()
 _claimed_interviews: set[int] = set()  # interview items past the duplicate check, still researching
 
 _SUFFIXES = r"\b(inc|incorporated|llc|ltd|limited|corp|corporation|co|company|plc|gmbh|technologies|labs)\b"
-_BLOCK_FIELDS = ("event_title", "event_start", "event_end", "event_link", "event_id")
+_BLOCK_FIELDS = ("event_title", "event_start", "event_end", "event_link", "event_id", "prep_event_id", "prep_start")
+_EVENT_IDS = ("event_id", "prep_event_id")  # calendar ids stay with the original item, never copied to reminders
+OA_WARMUP_MINUTES = 30  # the prep block placed right before every OA block
 _warmups = ThreadPoolExecutor(max_workers=2, thread_name_prefix="warmup")
 _WARMUP_WAIT = 20  # seconds to wait for the warm-up plan after the slot is picked
 
@@ -141,7 +143,10 @@ def _finish(item_id, event: dict | None = None, **fields) -> bool:
 
 
 def _delete_block(item) -> bool:
-    """Delete an item's calendar block, by id or (rows from before ids were stored) by title + start."""
+    """Delete an item's calendar block (and an OA's warm-up block before it), by id or (rows from
+    before ids were stored) by title + start. Returns whether the main block was there."""
+    if item.get("prep_event_id"):
+        gcal.delete_event(item["prep_event_id"])
     if item["event_id"]:
         return gcal.delete_event(item["event_id"])
     if item["event_title"] and item["event_start"]:
@@ -154,7 +159,7 @@ def _copy_result_to_duplicates(original_id):
     original = db.get_item(original_id)
     for dup in db.duplicates_of(original_id):
         db.update_item(dup["id"], prep_md=original["prep_md"],
-                       **{k: original[k] for k in _BLOCK_FIELDS if k != "event_id"})
+                       **{k: original[k] for k in _BLOCK_FIELDS if k not in _EVENT_IDS})
 
 
 # ---------- duplicates ----------
@@ -274,7 +279,7 @@ def _existing_interview(item_id, info):
 
 def _mark_duplicate(item_id, original, why):
     _finish(item_id, status="duplicate", duplicate_of=original["id"], reasoning=why,
-            prep_md=original["prep_md"], **{k: original[k] for k in _BLOCK_FIELDS if k != "event_id"})
+            prep_md=original["prep_md"], **{k: original[k] for k in _BLOCK_FIELDS if k not in _EVENT_IDS})
 
 
 # ---------- OA ----------
@@ -316,6 +321,10 @@ def _handle_oa(item_id, info, company):
 
 def _restore_block(item):
     """Put a block we deleted for a move back, because the move failed."""
+    if item.get("prep_start"):
+        prep = gcal.insert_event(_warmup_title(item["company"] or "Unknown company"), gcal.parse(item["prep_start"]),
+                                 gcal.parse(item["event_start"]), "Warm up right before the OA.\n\nBlocked by OAbot.")
+        db.update_item(item["id"], prep_event_id=prep["id"])
     event = gcal.insert_event(item["event_title"], gcal.parse(item["event_start"]), gcal.parse(item["event_end"]),
                               "\n\n".join(p for p in [f"Start here: {item['link']}" if item["link"] else "",
                                                       _why(item['reasoning']), "Blocked by OAbot."] if p))
@@ -331,7 +340,12 @@ def _warmup_result(future) -> dict:
         return {}
 
 
+def _warmup_title(company):
+    return f"Prep: {company} OA warm-up"
+
+
 def _schedule_oa(item_id, info, company, deadline, replaces=None, note=None):
+    """Block a warm-up prep session and, right after it, the OA itself, picked together as one slot."""
     minutes = (info.duration_minutes or 90) + 15  # setup + buffer
     body = (db.get_item(item_id) or {}).get("body") or ""
     detected = warmup.detect_platform(info.platform, info.link, body)
@@ -339,9 +353,11 @@ def _schedule_oa(item_id, info, company, deadline, replaces=None, note=None):
     plan_future = _warmups.submit(warmup.write_plan, company, info.role, detected, info.duration_minutes, body)
     platform = f" on {detected}" if detected else ""
     slot = scheduler.pick_slot(
-        task=f"Take the {company} online assessment{platform} ({info.duration_minutes or 90} min test)",
-        duration_minutes=minutes, hard_deadline=deadline,
+        task=(f"Warm up for {OA_WARMUP_MINUTES} min, then take the {company} online assessment{platform} "
+              f"({info.duration_minutes or 90} min test)"),
+        duration_minutes=OA_WARMUP_MINUTES + minutes, hard_deadline=deadline,
     )
+    prep_start, oa_start = slot["start"], slot["start"] + timedelta(minutes=OA_WARMUP_MINUTES)
     reasoning = slot["reasoning"]
     if note:
         reasoning = f"{note}\n{reasoning}"
@@ -350,20 +366,32 @@ def _schedule_oa(item_id, info, company, deadline, replaces=None, note=None):
                      f"{_fmt(deadline)}, before that block ends\n{reasoning}")
     title = f"OA: {company}" + (f" (due {_fmt(deadline)})" if deadline else "")
     plan = _warmup_result(plan_future)
-    description = "\n\n".join(p for p in [
-        f"Start here: {info.link}" if info.link else "",
+    prep_description = "\n\n".join(p for p in [
+        f"Warm up for the {company} OA, which starts right after this ({_fmt(oa_start)}).",
         plan.get("calendar", ""),
         f"Full warm-up plan: {config.PUBLIC_URL}/prep/{item_id}" if plan.get("markdown") else "",
         f"Prep tip: {slot['tip']}" if slot["tip"] and not plan.get("calendar") else "",
+        "Blocked by OAbot.",
+    ] if p)
+    description = "\n\n".join(p for p in [
+        f"Start here: {info.link}" if info.link else "",
+        f"Warm-up plan: {config.PUBLIC_URL}/prep/{item_id}" if plan.get("markdown") else "",
         _why(reasoning),
         "Blocked by OAbot.",
     ] if p)
-    event = gcal.insert_event(title, slot["start"], slot["end"], description)
-    if not _finish(item_id, event, status="scheduled", event_title=title, event_start=slot["start"].isoformat(),
+    prep_event = gcal.insert_event(_warmup_title(company), prep_start, oa_start, prep_description)
+    try:
+        event = gcal.insert_event(title, oa_start, slot["end"], description)
+    except Exception:
+        gcal.delete_event(prep_event["id"])
+        raise
+    if not _finish(item_id, event, status="scheduled", event_title=title, event_start=oa_start.isoformat(),
                    event_end=slot["end"].isoformat(), reasoning=reasoning,
+                   prep_event_id=prep_event["id"], prep_start=prep_start.isoformat(),
                    # a failed warm-up on a reschedule or move must not wipe the plan the OA already has
                    **({"prep_md": plan["markdown"]} if plan.get("markdown") else {}),
                    duplicate_of=replaces["id"] if replaces else None):
+        gcal.delete_event(prep_event["id"])  # _finish removed the OA block; the warm-up goes too
         if replaces:  # its old block is already gone; the old card must not claim it still exists
             db.update_item(replaces["id"], status="dismissed")
         return  # dismissed while Claude was picking the slot; _finish removed the event
@@ -375,13 +403,14 @@ def _schedule_oa(item_id, info, company, deadline, replaces=None, note=None):
                                reasoning=f"Replaced by a newer email with an earlier deadline (now {_fmt(slot['start'])}).")
         if old_dismissed:  # the student dismissed this OA while we were moving it
             gcal.delete_event(event["id"])
+            gcal.delete_event(prep_event["id"])
             db.update_item(item_id, status="duplicate", **dict.fromkeys(_BLOCK_FIELDS),
                            reasoning=f"Reminder for the {company} OA you dismissed; nothing scheduled.")
             return
         notify.send(f"{company} OA is due sooner than thought ({_fmt(deadline)}). "
-                    f"Moved the block to {_fmt(slot['start'])}.")
+                    f"Moved the block to {_fmt(oa_start)}, warm-up from {_fmt(prep_start)}.")
         return
-    notify.send(f"Blocked {_fmt(slot['start'])} for the {company} OA"
+    notify.send(f"Blocked {_fmt(oa_start)} for the {company} OA, {OA_WARMUP_MINUTES}-min warm-up before it"
                 + (f" (due {_fmt(deadline)})" if deadline else "") + ". " + slot["reasoning"].replace("\n", "; "))
 
 
@@ -540,7 +569,8 @@ def move_block(item_id: int) -> dict:
             return {"ok": False, "error": "No block to move." if not item else "Already moving it."}
         movable = (item["kind"] == "oa" and item["status"] == "scheduled") or \
                   (item["kind"] == "interview_scheduled" and item["status"] == "prepped")
-        start = gcal.parse(item["event_start"]) if item["event_start"] else None
+        start = (min(gcal.parse(t) for t in (item["prep_start"], item["event_start"]) if t)
+                 if item["event_start"] else None)  # an OA block starts with its warm-up
         if not movable or not start or not item["info_json"]:
             return {"ok": False, "error": "This card has no block to move."}
         if start <= datetime.now(config.TZ):

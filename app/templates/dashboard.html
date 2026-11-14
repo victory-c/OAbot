@@ -344,7 +344,7 @@ function lanes(evts) {          // side-by-side columns for overlapping events
 }
 
 function blockName(b) {
-  const what = b.kind === 'oa' ? 'OA' : (b.kind || '').startsWith('interview') ? 'Prep' : '';
+  const what = b.kind === 'oa' ? 'OA' : b.kind === 'oa_prep' || (b.kind || '').startsWith('interview') ? 'Prep' : '';
   if (what && b.company) return what + ': ' + b.company;
   return (b.title || 'Blocked for you').replace(/\s*\(due .*\)\s*$/, '');
 }
@@ -356,7 +356,7 @@ function renderWeek(c) {
   for (const e of c.busy) if (cols[e.day] && e.end_min > from && e.start_min < to) cols[e.day].push({...e, block: e.oabot});
   for (const b of c.blocks) {
     if (!cols[b.day]) continue;
-    const key = String(b.id);
+    const key = String(b.key || b.id);
     if (!seenBlocks.has(key)) seenBlocks.set(key, weekLoaded ? now : 0);
     cols[b.day].push({...b, block: true, isNew: now - seenBlocks.get(key) < 8000});
   }

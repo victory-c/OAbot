@@ -35,6 +35,8 @@ _NEW_COLUMNS = {
     "duplicate_of": "INTEGER",   # for reminders: the item that already covers this
     "followup": "TEXT",          # OAs after the block: asked | done | skipped (null: not asked yet)
     "risk_alerted": "TEXT",      # the deadline we last sent a "due soon, not done" ping for
+    "prep_event_id": "TEXT",     # OAs: the warm-up block right before the OA block
+    "prep_start": "TEXT",        # OAs: when that warm-up starts (it ends when the OA block starts)
 }
 _have = {r["name"] for r in _conn.execute("PRAGMA table_info(items)")}
 for _col, _type in _NEW_COLUMNS.items():

@@ -331,7 +331,11 @@ class Pipeline(unittest.TestCase):
         return db.get_item(item_id)
 
     def mock_events(self):
-        return gcal._mock_created()
+        """The main blocks (OA, interview prep); OA warm-ups are checked by warmup_events."""
+        return [e for e in gcal._mock_created() if not e["title"].endswith(" OA warm-up")]
+
+    def warmup_events(self):
+        return [e for e in gcal._mock_created() if e["title"].endswith(" OA warm-up")]
 
     def test_migration_kept_old_rows(self):
         conn = sqlite3.connect(TMP / "oabot.db")
@@ -672,7 +676,7 @@ class Pipeline(unittest.TestCase):
         self.assertEqual(item["status"], "scheduled")
         self.assertEqual(self.warmup_calls, ["CodeSignal"])  # from the link host, not the vague platform text
         self.assertEqual(item["prep_md"], "# Ramp: OA warm-up\n")
-        desc = self.mock_events()[-1]["description"]
+        desc = self.warmup_events()[-1]["description"]
         self.assertIn("10 min: two easy arrays", desc)
         self.assertIn(f"/prep/{item['id']}", desc)
 
@@ -684,7 +688,20 @@ class Pipeline(unittest.TestCase):
         item = self.email(kind="oa", company="Plaid", deadline=due)
         self.assertEqual(item["status"], "scheduled")
         self.assertIsNone(item["prep_md"])
-        self.assertIn("Prep tip: t", self.mock_events()[-1]["description"])
+        self.assertIn("Prep tip: t", self.warmup_events()[-1]["description"])
+
+    def test_oa_block_has_a_warmup_prep_block_right_before_it(self):
+        due = (datetime.now(TZ) + timedelta(days=4)).isoformat()
+        item = self.email(kind="oa", company="Vanta", deadline=due)
+        [prep] = [e for e in self.warmup_events() if e["id"] == item["prep_event_id"]]
+        self.assertEqual(prep["title"], "Prep: Vanta OA warm-up")
+        self.assertEqual(prep["id"], item["prep_event_id"])
+        self.assertEqual(gcal.parse(prep["start"]), gcal.parse(item["prep_start"]))
+        self.assertEqual(gcal.parse(prep["end"]), gcal.parse(item["event_start"]))  # ends as the OA starts
+        self.assertEqual(gcal.parse(item["event_start"]) - gcal.parse(item["prep_start"]),
+                         timedelta(minutes=pipeline.OA_WARMUP_MINUTES))
+        pipeline.dismiss(item["id"])
+        self.assertNotIn(prep["id"], [e["id"] for e in self.warmup_events()])  # dismissing the OA removes its warm-up
 
     # ---- Move this block ----
 

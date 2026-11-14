@@ -217,6 +217,15 @@ def calendar():
         if r.get("status") in ("duplicate", "replaced", "dismissed"):
             continue  # these rows copy or outlive a block they no longer own; drawing them would show it twice or after deletion
         mine.add((r.get("event_title"), r["event_start"]))
+        if r.get("prep_start"):  # an OA's warm-up, right before the OA block
+            title = pipeline._warmup_title(r.get("company") or "Unknown company")
+            mine.add((title, r["prep_start"]))
+            spot = _place(r["prep_start"], r["event_start"], day0)
+            if spot:
+                blocks.append({"id": r["id"], "key": f"{r['id']}-prep", "title": title,
+                               "company": r.get("company") or "", "kind": "oa_prep",
+                               "start": r["prep_start"], "end": r["event_start"],
+                               "day": spot[0], "start_min": spot[1], "end_min": spot[2]})
         spot = _place(r["event_start"], r["event_end"], day0)
         if spot:
             blocks.append({"id": r["id"], "title": r.get("event_title") or "", "company": r.get("company") or "",
